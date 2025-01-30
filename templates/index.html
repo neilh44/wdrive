@@ -5,10 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WhatsApp Drive Sync</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        /* Custom styles for file input */
+        .file-input-wrapper {
+            position: relative;
+            overflow: hidden;
+            display: inline-block;
+        }
+        .file-input-wrapper input[type=file] {
+            font-size: 100px;
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+            cursor: pointer;
+        }
+        .selected-file-name {
+            margin-top: 8px;
+            font-size: 0.875rem;
+            color: #4a5568;
+        }
+    </style>
 </head>
 <body class="bg-gray-100">
-    <div class="container mx-auto px-4 py-8">
-        <h1 class="text-3xl font-bold mb-8">WhatsApp Drive Sync Setup</h1>
+    <div class="container mx-auto px-4 py-8 max-w-3xl">
+        <h1 class="text-3xl font-bold mb-8 text-center">WhatsApp Drive Sync Setup</h1>
         
         {% with messages = get_flashed_messages() %}
             {% if messages %}
@@ -22,15 +43,38 @@
         
         <div class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
             <h2 class="text-xl font-semibold mb-4">Step 1: Upload Google Drive Credentials</h2>
+            <div class="mb-6 p-4 bg-gray-50 rounded border border-gray-200">
+                <p class="text-sm text-gray-600 mb-4">
+                    To get your credentials.json:
+                </p>
+                <ol class="list-decimal list-inside text-sm text-gray-600 space-y-2 mb-4">
+                    <li>Go to the <a href="https://console.cloud.google.com" target="_blank" class="text-blue-600 hover:text-blue-800">Google Cloud Console</a></li>
+                    <li>Create a new project or select an existing one</li>
+                    <li>Enable the Google Drive API</li>
+                    <li>Go to Credentials</li>
+                    <li>Create OAuth 2.0 Client ID credentials</li>
+                    <li>Download the credentials as JSON</li>
+                </ol>
+            </div>
             <form action="{{ url_for('upload_credentials') }}" method="post" enctype="multipart/form-data" class="mb-6">
                 <div class="mb-4">
-                    <label class="block text-gray-700 text-sm font-bold mb-2" for="credentials">
-                        credentials.json file
-                    </label>
-                    <input type="file" name="credentials" id="credentials" accept=".json" required
-                           class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                    <div class="file-input-wrapper">
+                        <input type="file" 
+                               name="credentials" 
+                               id="credentials" 
+                               accept=".json" 
+                               required
+                               class="hidden"
+                               onchange="updateFileName(this)">
+                        <button type="button" 
+                                onclick="document.getElementById('credentials').click()"
+                                class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                            Choose credentials.json
+                        </button>
+                    </div>
+                    <div id="selectedFileName" class="selected-file-name mt-2"></div>
                 </div>
-                <button type="submit" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                <button type="submit" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
                     Upload Credentials
                 </button>
             </form>
@@ -41,7 +85,10 @@
                     <label class="block text-gray-700 text-sm font-bold mb-2" for="directory">
                         WhatsApp Media Directory
                     </label>
-                    <input type="text" name="directory" id="directory" required
+                    <input type="text" 
+                           name="directory" 
+                           id="directory" 
+                           required
                            placeholder="Enter full path to WhatsApp Media directory"
                            class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
                 </div>
@@ -61,16 +108,16 @@
             </div>
         </div>
         
-        <div id="statusDisplay" class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
+        <div id="statusDisplay" class="bg-white shadow-md rounded px-8 pt-6 pb-8">
             <h2 class="text-xl font-semibold mb-4">Sync Status</h2>
-            <div id="statusContent">
+            <div id="statusContent" class="space-y-2">
                 {% if sync_status %}
-                    <p>Running: {{ sync_status.is_running }}</p>
-                    <p>Last Synced: {{ sync_status.last_synced or 'Never' }}</p>
-                    <p>Files Synced: {{ sync_status.total_files_synced }}</p>
-                    <p>Directory: {{ sync_status.sync_directory or 'Not set' }}</p>
+                    <p><span class="font-semibold">Running:</span> {{ sync_status.is_running }}</p>
+                    <p><span class="font-semibold">Last Synced:</span> {{ sync_status.last_synced or 'Never' }}</p>
+                    <p><span class="font-semibold">Files Synced:</span> {{ sync_status.total_files_synced }}</p>
+                    <p><span class="font-semibold">Directory:</span> {{ sync_status.sync_directory or 'Not set' }}</p>
                     {% if sync_status.last_error %}
-                        <p class="text-red-500">Last Error: {{ sync_status.last_error }}</p>
+                        <p class="text-red-500"><span class="font-semibold">Last Error:</span> {{ sync_status.last_error }}</p>
                     {% endif %}
                 {% else %}
                     <p>No sync status available. Please complete setup first.</p>
@@ -80,6 +127,12 @@
     </div>
 
     <script>
+        // Function to update file name display
+        function updateFileName(input) {
+            const fileName = input.files[0]?.name || '';
+            document.getElementById('selectedFileName').textContent = fileName ? `Selected file: ${fileName}` : '';
+        }
+
         // Function to update status display
         function updateStatus() {
             fetch('/status')
@@ -87,11 +140,11 @@
                 .then(data => {
                     const statusContent = document.getElementById('statusContent');
                     statusContent.innerHTML = `
-                        <p>Running: ${data.is_running}</p>
-                        <p>Last Synced: ${data.last_synced || 'Never'}</p>
-                        <p>Files Synced: ${data.total_files_synced}</p>
-                        <p>Directory: ${data.sync_directory || 'Not set'}</p>
-                        ${data.last_error ? `<p class="text-red-500">Last Error: ${data.last_error}</p>` : ''}
+                        <p><span class="font-semibold">Running:</span> ${data.is_running}</p>
+                        <p><span class="font-semibold">Last Synced:</span> ${data.last_synced || 'Never'}</p>
+                        <p><span class="font-semibold">Files Synced:</span> ${data.total_files_synced}</p>
+                        <p><span class="font-semibold">Directory:</span> ${data.sync_directory || 'Not set'}</p>
+                        ${data.last_error ? `<p class="text-red-500"><span class="font-semibold">Last Error:</span> ${data.last_error}</p>` : ''}
                     `;
                 })
                 .catch(error => {
@@ -171,7 +224,7 @@
             const notification = document.createElement('div');
             notification.className = `fixed top-4 right-4 p-4 rounded shadow-lg ${
                 type === 'success' ? 'bg-green-500' : 'bg-red-500'
-            } text-white`;
+            } text-white max-w-md`;
             notification.textContent = message;
             document.body.appendChild(notification);
             
