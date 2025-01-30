@@ -1,0 +1,16 @@
+# Flask and related packages
+Flask==3.0.2
+Werkzeug==3.0.1
+python-dotenv==1.0.0
+
+# Google API packages
+google-auth-oauthlib==1.2.0
+google-api-python-client==2.116.0
+google-auth-httplib2==0.1.1
+
+# File monitoring
+watchdog==3.0.0
+
+# Additional utilities
+requests==2.31.0
+pytz==2024.1
