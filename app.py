@@ -11,6 +11,9 @@ import json
 from datetime import datetime
 from typing import Dict
 import logging
+from threading import Thread
+import time
+
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -110,6 +113,81 @@ class UserWhatsAppSync:
 
         self.drive_service = build('drive', 'v3', credentials=creds)
         return None  # Authentication successful
+    
+def sync_files(self):
+    """Diagnostic sync function to identify issues."""
+    logger.debug("Starting sync_files method")
+    
+    # Log sync status
+    logger.debug(f"Current sync status: {self.sync_status}")
+    
+    # Check if sync should run
+    if not self.sync_status['is_running']:
+        logger.debug("Sync not running, exiting")
+        return
+        
+    # Check directory
+    if not self.sync_status['sync_directory']:
+        logger.error("No sync directory set")
+        self.sync_status['last_error'] = "No sync directory set"
+        return
+        
+    try:
+        # Verify directory exists
+        if not os.path.exists(self.sync_status['sync_directory']):
+            logger.error(f"Directory does not exist: {self.sync_status['sync_directory']}")
+            self.sync_status['last_error'] = "Directory not found"
+            return
+            
+        # Check directory permissions
+        if not os.access(self.sync_status['sync_directory'], os.R_OK):
+            logger.error(f"Cannot read directory: {self.sync_status['sync_directory']}")
+            self.sync_status['last_error'] = "Cannot read directory"
+            return
+            
+        # List directory contents
+        logger.debug(f"Reading directory: {self.sync_status['sync_directory']}")
+        dir_contents = os.listdir(self.sync_status['sync_directory'])
+        logger.debug(f"Found {len(dir_contents)} items in directory")
+        
+        # Check Drive service
+        logger.debug("Checking Drive service status...")
+        if not self.drive_service:
+            logger.debug("Drive service not initialized, attempting authentication")
+            auth_result = self.authenticate()
+            if auth_result:
+                logger.error(f"Authentication needed. Auth result: {auth_result}")
+                self.sync_status['last_error'] = "Authentication required"
+                return
+                
+        # Test Drive API connection
+        try:
+            logger.debug("Testing Drive API connection...")
+            files = self.drive_service.files().list(pageSize=1).execute()
+            logger.debug("Drive API connection successful")
+        except Exception as e:
+            logger.error(f"Drive API test failed: {str(e)}")
+            self.sync_status['last_error'] = f"Drive API error: {str(e)}"
+            return
+            
+        # Log success
+        logger.debug("Initial checks completed successfully")
+        self.sync_status['last_synced'] = datetime.now().isoformat()
+        
+    except Exception as e:
+        logger.error(f"Error in sync_files: {str(e)}")
+        self.sync_status['last_error'] = str(e)
+
+def background_sync(sync_tool):
+    """Background sync process."""
+    while sync_tool.sync_status['is_running']:
+        try:
+            sync_tool.sync_files()  # Actually call the sync method
+            logger.debug("Completed sync iteration")
+        except Exception as e:
+            logger.error(f"Error in background sync: {str(e)}")
+        time.sleep(30)  # Wait 30 seconds between attempts
+
 
 def save_sync_tools() -> None:
     """Save sync tools state to file."""
@@ -375,13 +453,24 @@ def start_sync():
             return jsonify({'status': 'error', 'message': 'Please set up credentials first'}), 400
             
         sync_tool = user_sync_tools[user_id]
+        
+        # Check if already running
+        if sync_tool.sync_status['is_running']:
+            logger.debug(f"Sync already running for user: {user_id}")
+            return jsonify({'status': 'success', 'message': 'Sync already running'})
+            
         if not sync_tool.sync_status['sync_directory']:
             logger.error(f"No sync directory set for user: {user_id}")
             return jsonify({'status': 'error', 'message': 'Please set sync directory first'}), 400
             
-        # Start sync process for user
+        # Start sync process
         sync_tool.sync_status['is_running'] = True
         save_sync_tools()  # Save the running state
+        
+        # Start background thread
+        sync_thread = Thread(target=background_sync, args=(sync_tool,))
+        sync_thread.daemon = True  # Thread will be terminated when main thread ends
+        sync_thread.start()
         
         logger.debug(f"Started sync process for user: {user_id}")
         return jsonify({'status': 'success', 'message': 'Sync service started'})
@@ -389,6 +478,7 @@ def start_sync():
     except Exception as e:
         logger.error(f"Error in start_sync: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
 
 @app.route('/stop', methods=['POST'])
 def stop_sync():
