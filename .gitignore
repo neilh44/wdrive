@@ -21,7 +21,6 @@ package-lock.json
 .env.development.local
 .env.test.local
 .env.production.local
-venv
 
 # Debug
 npm-debug.log*
@@ -109,6 +108,18 @@ public/
 
 # DynamoDB Local
 .dynamodb/
+
+# Python virtual environments
+venv/
+env/
+.env/
+.venv/
+ENV/
+*.pyc
+__pycache__/
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
 
 # TernJS
 .tern-port
