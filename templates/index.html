@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Drive Sync</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold mb-8">WhatsApp Drive Sync Setup</h1>
+        
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 mb-4">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        <div class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
+            <h2 class="text-xl font-semibold mb-4">Step 1: Upload Google Drive Credentials</h2>
+            <form action="{{ url_for('upload_credentials') }}" method="post" enctype="multipart/form-data" class="mb-6">
+                <div class="mb-4">
+                    <label class="block text-gray-700 text-sm font-bold mb-2" for="credentials">
+                        credentials.json file
+                    </label>
+                    <input type="file" name="credentials" id="credentials" accept=".json" required
+                           class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                </div>
+                <button type="submit" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                    Upload Credentials
+                </button>
+            </form>
+            
+            <h2 class="text-xl font-semibold mb-4">Step 2: Set Sync Directory</h2>
+            <form id="syncDirForm" class="mb-6">
+                <div class="mb-4">
+                    <label class="block text-gray-700 text-sm font-bold mb-2" for="directory">
+                        WhatsApp Media Directory
+                    </label>
+                    <input type="text" name="directory" id="directory" required
+                           placeholder="Enter full path to WhatsApp Media directory"
+                           class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                </div>
+                <button type="submit" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                    Set Directory
+                </button>
+            </form>
+            
+            <h2 class="text-xl font-semibold mb-4">Step 3: Control Sync Service</h2>
+            <div class="flex space-x-4">
+                <button onclick="startSync()" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                    Start Sync
+                </button>
+                <button onclick="stopSync()" class="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                    Stop Sync
+                </button>
+            </div>
+        </div>
+        
+        <div id="statusDisplay" class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
+            <h2 class="text-xl font-semibold mb-4">Sync Status</h2>
+            <div id="statusContent">
+                {% if sync_status %}
+                    <p>Running: {{ sync_status.is_running }}</p>
+                    <p>Last Synced: {{ sync_status.last_synced or 'Never' }}</p>
+                    <p>Files Synced: {{ sync_status.total_files_synced }}</p>
+                    <p>Directory: {{ sync_status.sync_directory or 'Not set' }}</p>
+                    {% if sync_status.last_error %}
+                        <p class="text-red-500">Last Error: {{ sync_status.last_error }}</p>
+                    {% endif %}
+                {% else %}
+                    <p>No sync status available. Please complete setup first.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Function to update status display
+        function updateStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    const statusContent = document.getElementById('statusContent');
+                    statusContent.innerHTML = `
+                        <p>Running: ${data.is_running}</p>
+                        <p>Last Synced: ${data.last_synced || 'Never'}</p>
+                        <p>Files Synced: ${data.total_files_synced}</p>
+                        <p>Directory: ${data.sync_directory || 'Not set'}</p>
+                        ${data.last_error ? `<p class="text-red-500">Last Error: ${data.last_error}</p>` : ''}
+                    `;
+                })
+                .catch(error => {
+                    console.error('Error fetching status:', error);
+                });
+        }
+
+        // Handle sync directory form submission
+        document.getElementById('syncDirForm').onsubmit = function(e) {
+            e.preventDefault();
+            const directory = document.getElementById('directory').value;
+            
+            fetch('/set_sync_directory', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `directory=${encodeURIComponent(directory)}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showNotification('Directory set successfully!', 'success');
+                    updateStatus();
+                } else {
+                    showNotification(data.message || 'Error setting directory', 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showNotification('Error setting directory', 'error');
+            });
+        };
+
+        // Function to start sync
+        function startSync() {
+            fetch('/start', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showNotification('Sync service started successfully!', 'success');
+                    updateStatus();
+                } else {
+                    showNotification(data.message || 'Error starting sync', 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showNotification('Error starting sync', 'error');
+            });
+        }
+
+        // Function to stop sync
+        function stopSync() {
+            fetch('/stop', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showNotification('Sync service stopped successfully!', 'success');
+                    updateStatus();
+                } else {
+                    showNotification(data.message || 'Error stopping sync', 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showNotification('Error stopping sync', 'error');
+            });
+        }
+
+        // Function to show notifications
+        function showNotification(message, type = 'success') {
+            const notification = document.createElement('div');
+            notification.className = `fixed top-4 right-4 p-4 rounded shadow-lg ${
+                type === 'success' ? 'bg-green-500' : 'bg-red-500'
+            } text-white`;
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            
+            // Remove notification after 3 seconds
+            setTimeout(() => {
+                notification.remove();
+            }, 3000);
+        }
+
+        // Update status every 5 seconds
+        setInterval(updateStatus, 5000);
+        
+        // Initial status update
+        updateStatus();
+    </script>
+</body>
+</html>

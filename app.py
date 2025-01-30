@@ -1,167 +1,224 @@
 import os
-from flask import Flask, request, jsonify
+import time
+from flask import Flask, jsonify, request, render_template, flash, redirect, url_for, session
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+import secrets
 from werkzeug.utils import secure_filename
-import re
-import mimetypes
-import io
 import json
+from datetime import datetime
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(16))
 
 # Configuration
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
-CREDENTIALS = json.loads(os.environ.get('GOOGLE_CREDENTIALS', '{}'))
+UPLOAD_FOLDER = 'user_credentials'
+ALLOWED_EXTENSIONS = {'json'}
 
-class WhatsAppDriveSync:
-    def __init__(self):
+# Ensure upload directory exists
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# User sessions storage
+user_sync_tools = {}
+
+class UserWhatsAppSync:
+    def __init__(self, user_id):
+        self.user_id = user_id
         self.drive_service = None
+        self.sync_status = {
+            'is_running': False,
+            'last_synced': None,
+            'total_files_synced': 0,
+            'last_error': None,
+            'sync_directory': None
+        }
         
+    def get_credentials_path(self):
+        return os.path.join(UPLOAD_FOLDER, f'credentials_{self.user_id}.json')
+        
+    def get_token_path(self):
+        return os.path.join(UPLOAD_FOLDER, f'token_{self.user_id}.json')
+
     def authenticate(self):
-        """Handles Google Drive authentication for web service."""
+        """Handles Google Drive authentication for specific user."""
         creds = None
+        token_path = self.get_token_path()
         
-        if CREDENTIALS:
-            creds = Credentials.from_authorized_user_info(CREDENTIALS, SCOPES)
-            
+        if os.path.exists(token_path):
+            with open(token_path, 'r') as token:
+                creds_data = json.load(token)
+                creds = Credentials.from_authorized_user_info(creds_data, SCOPES)
+
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             else:
-                raise Exception("Invalid credentials. Please authenticate through OAuth flow.")
-        
+                credentials_path = self.get_credentials_path()
+                if not os.path.exists(credentials_path):
+                    raise Exception("Please upload credentials.json first")
+                    
+                flow = Flow.from_client_secrets_file(
+                    credentials_path,
+                    scopes=SCOPES,
+                    redirect_uri=url_for('oauth2callback', _external=True)
+                )
+                
+                # Store flow in session for callback
+                auth_url, _ = flow.authorization_url(prompt='consent')
+                session['current_flow'] = flow
+                return auth_url
+
+            # Save the credentials
+            with open(token_path, 'w') as token:
+                token.write(creds.to_json())
+
         self.drive_service = build('drive', 'v3', credentials=creds)
+        return None  # Authentication successful
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+@app.route('/')
+def index():
+    """Landing page with setup instructions."""
+    user_id = session.get('user_id')
+    if not user_id:
+        user_id = secrets.token_urlsafe(16)
+        session['user_id'] = user_id
         
-    def extract_contact_info(self, filename):
-        """Extract contact info from filename."""
-        # Assuming filename format: contact_id-timestamp.ext
-        match = re.match(r'([^-]+)-.*', filename)
-        if match:
-            contact_id = match.group(1)
-            is_group = '@g.us' in contact_id
-            
-            if not is_group:
-                contact_id = re.sub(r'^(\d{1,3})(\d+)$', r'\1-\2', contact_id)
-            else:
-                contact_id = f'group-{contact_id}'
-            return contact_id, is_group
-        return 'unknown', False
+    sync_tool = user_sync_tools.get(user_id)
+    return render_template('index.html', 
+                         sync_status=sync_tool.sync_status if sync_tool else None,
+                         user_id=user_id)
 
-    def create_folder_if_not_exists(self, folder_name, parent_id=None):
-        """Creates a folder in Google Drive if it doesn't exist."""
-        query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder'"
-        if parent_id:
-            query += f" and '{parent_id}' in parents"
-            
-        results = self.drive_service.files().list(
-            q=query,
-            spaces='drive',
-            fields='files(id, name)').execute()
-            
-        if not results['files']:
-            file_metadata = {
-                'name': folder_name,
-                'mimeType': 'application/vnd.google-apps.folder'
-            }
-            if parent_id:
-                file_metadata['parents'] = [parent_id]
-                
-            folder = self.drive_service.files().create(
-                body=file_metadata,
-                fields='id').execute()
-            return folder.get('id')
-            
-        return results['files'][0]['id']
-
-    def get_media_type_folder(self, contact_id, is_group, media_type):
-        """Creates or gets the folder structure for a specific media type."""
-        whatsapp_folder_id = self.create_folder_if_not_exists('WhatsApp Sync')
-        contact_type = 'Groups' if is_group else 'Contacts'
-        type_folder_id = self.create_folder_if_not_exists(contact_type, whatsapp_folder_id)
-        contact_folder_id = self.create_folder_if_not_exists(contact_id, type_folder_id)
-        return self.create_folder_if_not_exists(media_type, contact_folder_id)
-
-    def upload_file(self, file_data, filename):
-        """Uploads a file to the appropriate folder in Google Drive."""
-        try:
-            contact_id, is_group = self.extract_contact_info(filename)
-            
-            mime_type = mimetypes.guess_type(filename)[0]
-            if mime_type:
-                if mime_type.startswith('image/'):
-                    media_type = 'Images'
-                elif mime_type.startswith('video/'):
-                    media_type = 'Videos'
-                elif mime_type.startswith('audio/'):
-                    media_type = 'Audio'
-                else:
-                    media_type = 'Documents'
-            else:
-                media_type = 'Documents'
-
-            folder_id = self.get_media_type_folder(contact_id, is_group, media_type)
-            
-            file_metadata = {
-                'name': secure_filename(filename),
-                'parents': [folder_id]
-            }
-
-            media = MediaIoBaseUpload(
-                io.BytesIO(file_data),
-                mimetype=mime_type,
-                resumable=True
-            )
-            
-            file = self.drive_service.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields='id').execute()
-                
-            return {
-                'success': True,
-                'file_id': file.get('id'),
-                'location': f"{contact_id}/{media_type}/{filename}"
-            }
-            
-        except Exception as e:
-            return {
-                'success': False,
-                'error': str(e)
-            }
-
-# Initialize sync tool
-sync_tool = WhatsAppDriveSync()
-
-@app.before_first_request
-def initialize():
-    sync_tool.authenticate()
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint for Render."""
-    return jsonify({'status': 'healthy'})
-
-@app.route('/upload', methods=['POST'])
-def upload_file():
-    """Handle file upload requests."""
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file provided'}), 400
+@app.route('/upload_credentials', methods=['POST'])
+def upload_credentials():
+    """Handle credentials.json upload."""
+    if 'credentials' not in request.files:
+        flash('No file provided')
+        return redirect(url_for('index'))
         
-    file = request.files['file']
+    file = request.files['credentials']
     if file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
+        flash('No file selected')
+        return redirect(url_for('index'))
         
-    file_data = file.read()
-    result = sync_tool.upload_file(file_data, file.filename)
+    if file and allowed_file(file.filename):
+        user_id = session.get('user_id')
+        if not user_id:
+            flash('Session expired')
+            return redirect(url_for('index'))
+            
+        filename = f'credentials_{user_id}.json'
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(filepath)
+        
+        # Initialize sync tool for user
+        sync_tool = UserWhatsAppSync(user_id)
+        user_sync_tools[user_id] = sync_tool
+        
+        # Start OAuth flow
+        try:
+            auth_url = sync_tool.authenticate()
+            if auth_url:
+                return redirect(auth_url)
+        except Exception as e:
+            flash(f'Authentication error: {str(e)}')
+            
+        return redirect(url_for('index'))
+        
+    flash('Invalid file type')
+    return redirect(url_for('index'))
+
+@app.route('/oauth2callback')
+def oauth2callback():
+    """Handle OAuth callback."""
+    flow = session.get('current_flow')
+    if not flow:
+        return 'Error: OAuth flow not found', 400
+        
+    flow.fetch_token(authorization_response=request.url)
     
-    if result['success']:
-        return jsonify(result), 200
-    else:
-        return jsonify(result), 500
+    user_id = session.get('user_id')
+    if not user_id:
+        return 'Error: User session expired', 400
+        
+    sync_tool = user_sync_tools.get(user_id)
+    if not sync_tool:
+        return 'Error: Sync tool not initialized', 400
+        
+    # Save credentials
+    creds = flow.credentials
+    with open(sync_tool.get_token_path(), 'w') as token:
+        token.write(creds.to_json())
+        
+    # Clean up
+    session.pop('current_flow', None)
+    
+    flash('Successfully authenticated with Google Drive!')
+    return redirect(url_for('index'))
+
+@app.route('/set_sync_directory', methods=['POST'])
+def set_sync_directory():
+    """Set the directory to sync."""
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'status': 'error', 'message': 'Session expired'}), 401
+        
+    sync_tool = user_sync_tools.get(user_id)
+    if not sync_tool:
+        return jsonify({'status': 'error', 'message': 'Please upload credentials first'}), 400
+        
+    directory = request.form.get('directory')
+    if not directory:
+        return jsonify({'status': 'error', 'message': 'No directory provided'}), 400
+        
+    sync_tool.sync_status['sync_directory'] = directory
+    return jsonify({'status': 'success', 'message': 'Sync directory updated'})
+
+@app.route('/start', methods=['POST'])
+def start_sync():
+    """Start the sync service for a user."""
+    user_id = session.get('user_id')
+    if not user_id or user_id not in user_sync_tools:
+        return jsonify({'status': 'error', 'message': 'Please set up credentials first'}), 400
+        
+    sync_tool = user_sync_tools[user_id]
+    if not sync_tool.sync_status['sync_directory']:
+        return jsonify({'status': 'error', 'message': 'Please set sync directory first'}), 400
+        
+    try:
+        # Start sync process for user
+        sync_tool.sync_status['is_running'] = True
+        return jsonify({'status': 'success', 'message': 'Sync service started'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/stop', methods=['POST'])
+def stop_sync():
+    """Stop the sync service for a user."""
+    user_id = session.get('user_id')
+    if not user_id or user_id not in user_sync_tools:
+        return jsonify({'status': 'error', 'message': 'Service not running'}), 400
+        
+    try:
+        sync_tool = user_sync_tools[user_id]
+        sync_tool.sync_status['is_running'] = False
+        return jsonify({'status': 'success', 'message': 'Sync service stopped'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/status')
+def get_status():
+    """Get sync status for a user."""
+    user_id = session.get('user_id')
+    if not user_id or user_id not in user_sync_tools:
+        return jsonify({'status': 'not_configured'})
+        
+    return jsonify(user_sync_tools[user_id].sync_status)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

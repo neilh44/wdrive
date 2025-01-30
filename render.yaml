@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: whatsapp-drive-sync
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.0
+      - key: PORT
+        value: 10000
+      - key: SECRET_KEY
+        sync: false
+    disk:
+      name: user-credentials
+      mountPath: /app/user_credentials
+      sizeGB: 1
+    healthCheckPath: /health
+    autoDeploy: true
