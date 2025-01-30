@@ -6,7 +6,6 @@
     <title>WhatsApp Drive Sync</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
-        /* Custom styles for file input */
         .file-input-wrapper {
             position: relative;
             overflow: hidden;
@@ -25,30 +24,53 @@
             font-size: 0.875rem;
             color: #4a5568;
         }
+        /* Add loading spinner */
+        .loading-spinner {
+            display: none;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        /* Add disabled state styles */
+        .button-disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body class="bg-gray-100">
     <div class="container mx-auto px-4 py-8 max-w-3xl">
         <h1 class="text-3xl font-bold mb-8 text-center">WhatsApp Drive Sync Setup</h1>
         
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                {% for message in messages %}
-                    <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 mb-4">
-                        {{ message }}
-                    </div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
+        <div id="flashMessages" class="mb-4">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="bg-{{ category }}-100 border-l-4 border-{{ category }}-500 text-{{ category }}-700 p-4 mb-4">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+        </div>
         
         <div class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
+            <!-- Step 1: Credentials -->
             <h2 class="text-xl font-semibold mb-4">Step 1: Upload Google Drive Credentials</h2>
             <div class="mb-6 p-4 bg-gray-50 rounded border border-gray-200">
                 <p class="text-sm text-gray-600 mb-4">
                     To get your credentials.json:
                 </p>
                 <ol class="list-decimal list-inside text-sm text-gray-600 space-y-2 mb-4">
-                    <li>Go to the <a href="https://console.cloud.google.com" target="_blank" class="text-blue-600 hover:text-blue-800">Google Cloud Console</a></li>
+                    <li>Go to the <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:text-blue-800">Google Cloud Console</a></li>
                     <li>Create a new project or select an existing one</li>
                     <li>Enable the Google Drive API</li>
                     <li>Go to Credentials</li>
@@ -56,7 +78,7 @@
                     <li>Download the credentials as JSON</li>
                 </ol>
             </div>
-            <form action="{{ url_for('upload_credentials') }}" method="post" enctype="multipart/form-data" class="mb-6">
+            <form action="{{ url_for('upload_credentials') }}" method="post" enctype="multipart/form-data" class="mb-6" id="credentialsForm">
                 <div class="mb-4">
                     <div class="file-input-wrapper">
                         <input type="file" 
@@ -65,20 +87,22 @@
                                accept=".json" 
                                required
                                class="hidden"
-                               onchange="updateFileName(this)">
+                               onchange="handleFileSelect(this)">
                         <button type="button" 
                                 onclick="document.getElementById('credentials').click()"
                                 class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
                             Choose credentials.json
                         </button>
+                        <span id="uploadSpinner" class="loading-spinner"></span>
                     </div>
                     <div id="selectedFileName" class="selected-file-name mt-2"></div>
                 </div>
-                <button type="submit" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                <button type="submit" id="uploadButton" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
                     Upload Credentials
                 </button>
             </form>
             
+            <!-- Step 2: Directory Setup -->
             <h2 class="text-xl font-semibold mb-4">Step 2: Set Sync Directory</h2>
             <form id="syncDirForm" class="mb-6">
                 <div class="mb-4">
@@ -92,70 +116,68 @@
                            placeholder="Enter full path to WhatsApp Media directory"
                            class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
                 </div>
-                <button type="submit" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                <button type="submit" id="setDirButton" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
                     Set Directory
                 </button>
+                <span id="dirSpinner" class="loading-spinner"></span>
             </form>
             
+            <!-- Step 3: Sync Controls -->
             <h2 class="text-xl font-semibold mb-4">Step 3: Control Sync Service</h2>
             <div class="flex space-x-4">
-                <button onclick="startSync()" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                <button onclick="startSync()" id="startButton" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
                     Start Sync
                 </button>
-                <button onclick="stopSync()" class="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                <button onclick="stopSync()" id="stopButton" class="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
                     Stop Sync
                 </button>
+                <span id="syncSpinner" class="loading-spinner"></span>
             </div>
         </div>
         
+        <!-- Status Display -->
         <div id="statusDisplay" class="bg-white shadow-md rounded px-8 pt-6 pb-8">
             <h2 class="text-xl font-semibold mb-4">Sync Status</h2>
             <div id="statusContent" class="space-y-2">
-                {% if sync_status %}
-                    <p><span class="font-semibold">Running:</span> {{ sync_status.is_running }}</p>
-                    <p><span class="font-semibold">Last Synced:</span> {{ sync_status.last_synced or 'Never' }}</p>
-                    <p><span class="font-semibold">Files Synced:</span> {{ sync_status.total_files_synced }}</p>
-                    <p><span class="font-semibold">Directory:</span> {{ sync_status.sync_directory or 'Not set' }}</p>
-                    {% if sync_status.last_error %}
-                        <p class="text-red-500"><span class="font-semibold">Last Error:</span> {{ sync_status.last_error }}</p>
-                    {% endif %}
-                {% else %}
-                    <p>No sync status available. Please complete setup first.</p>
-                {% endif %}
+                <p><span class="font-semibold">Status:</span> <span id="syncStatus">Not initialized</span></p>
+                <p><span class="font-semibold">Last Synced:</span> <span id="lastSync">Never</span></p>
+                <p><span class="font-semibold">Files Synced:</span> <span id="fileCount">0</span></p>
+                <p><span class="font-semibold">Directory:</span> <span id="currentDir">Not set</span></p>
+                <p id="errorMessage" class="text-red-500 hidden"></p>
             </div>
         </div>
     </div>
 
     <script>
-        // Function to update file name display
-        function updateFileName(input) {
+        // Handle file selection
+        function handleFileSelect(input) {
             const fileName = input.files[0]?.name || '';
             document.getElementById('selectedFileName').textContent = fileName ? `Selected file: ${fileName}` : '';
+            
+            // Validate file
+            if (fileName && !fileName.toLowerCase().endsWith('.json')) {
+                showNotification('Please select a valid JSON file', 'error');
+                input.value = '';
+                document.getElementById('selectedFileName').textContent = '';
+            }
         }
 
-        // Function to update status display
-        function updateStatus() {
-            fetch('/status')
-                .then(response => response.json())
-                .then(data => {
-                    const statusContent = document.getElementById('statusContent');
-                    statusContent.innerHTML = `
-                        <p><span class="font-semibold">Running:</span> ${data.is_running}</p>
-                        <p><span class="font-semibold">Last Synced:</span> ${data.last_synced || 'Never'}</p>
-                        <p><span class="font-semibold">Files Synced:</span> ${data.total_files_synced}</p>
-                        <p><span class="font-semibold">Directory:</span> ${data.sync_directory || 'Not set'}</p>
-                        ${data.last_error ? `<p class="text-red-500"><span class="font-semibold">Last Error:</span> ${data.last_error}</p>` : ''}
-                    `;
-                })
-                .catch(error => {
-                    console.error('Error fetching status:', error);
-                });
-        }
+        // Form submission handlers
+        document.getElementById('credentialsForm').onsubmit = function(e) {
+            const spinner = document.getElementById('uploadSpinner');
+            const button = document.getElementById('uploadButton');
+            spinner.style.display = 'inline-block';
+            button.classList.add('button-disabled');
+        };
 
-        // Handle sync directory form submission
         document.getElementById('syncDirForm').onsubmit = function(e) {
             e.preventDefault();
+            const spinner = document.getElementById('dirSpinner');
+            const button = document.getElementById('setDirButton');
             const directory = document.getElementById('directory').value;
+            
+            spinner.style.display = 'inline-block';
+            button.classList.add('button-disabled');
             
             fetch('/set_sync_directory', {
                 method: 'POST',
@@ -176,11 +198,21 @@
             .catch(error => {
                 console.error('Error:', error);
                 showNotification('Error setting directory', 'error');
+            })
+            .finally(() => {
+                spinner.style.display = 'none';
+                button.classList.remove('button-disabled');
             });
         };
 
-        // Function to start sync
+        // Sync control functions
         function startSync() {
+            const spinner = document.getElementById('syncSpinner');
+            const button = document.getElementById('startButton');
+            
+            spinner.style.display = 'inline-block';
+            button.classList.add('button-disabled');
+            
             fetch('/start', {
                 method: 'POST'
             })
@@ -196,11 +228,20 @@
             .catch(error => {
                 console.error('Error:', error);
                 showNotification('Error starting sync', 'error');
+            })
+            .finally(() => {
+                spinner.style.display = 'none';
+                button.classList.remove('button-disabled');
             });
         }
 
-        // Function to stop sync
         function stopSync() {
+            const spinner = document.getElementById('syncSpinner');
+            const button = document.getElementById('stopButton');
+            
+            spinner.style.display = 'inline-block';
+            button.classList.add('button-disabled');
+            
             fetch('/stop', {
                 method: 'POST'
             })
@@ -216,28 +257,53 @@
             .catch(error => {
                 console.error('Error:', error);
                 showNotification('Error stopping sync', 'error');
+            })
+            .finally(() => {
+                spinner.style.display = 'none';
+                button.classList.remove('button-disabled');
             });
         }
 
-        // Function to show notifications
+        // Status update function
+        function updateStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('syncStatus').textContent = data.is_running ? 'Running' : 'Stopped';
+                    document.getElementById('lastSync').textContent = data.last_synced || 'Never';
+                    document.getElementById('fileCount').textContent = data.total_files_synced;
+                    document.getElementById('currentDir').textContent = data.sync_directory || 'Not set';
+                    
+                    const errorMessage = document.getElementById('errorMessage');
+                    if (data.last_error) {
+                        errorMessage.textContent = `Error: ${data.last_error}`;
+                        errorMessage.classList.remove('hidden');
+                    } else {
+                        errorMessage.classList.add('hidden');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching status:', error);
+                    showNotification('Error updating status', 'error');
+                });
+        }
+
+        // Notification function
         function showNotification(message, type = 'success') {
             const notification = document.createElement('div');
             notification.className = `fixed top-4 right-4 p-4 rounded shadow-lg ${
                 type === 'success' ? 'bg-green-500' : 'bg-red-500'
-            } text-white max-w-md`;
+            } text-white max-w-md z-50`;
             notification.textContent = message;
             document.body.appendChild(notification);
             
-            // Remove notification after 3 seconds
             setTimeout(() => {
                 notification.remove();
             }, 3000);
         }
 
-        // Update status every 5 seconds
+        // Initialize status updates
         setInterval(updateStatus, 5000);
-        
-        // Initial status update
         updateStatus();
     </script>
 </body>
