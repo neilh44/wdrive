@@ -184,6 +184,7 @@ def index():
     return render_template('index.html', 
                          sync_status=sync_tool.sync_status if sync_tool else None,
                          user_id=user_id)
+
 @app.route('/upload_credentials', methods=['POST'])
 def upload_credentials():
     """Handle credentials.json upload with enhanced error logging."""
@@ -246,16 +247,24 @@ def upload_credentials():
             
             # Start OAuth flow
             try:
-                auth_url = sync_tool.authenticate()
-                if auth_url:
-                    logger.debug(f"Starting OAuth flow with URL: {auth_url}")
-                    return redirect(auth_url)
+                flow = Flow.from_client_secrets_file(
+                    filepath,
+                    scopes=SCOPES,
+                    redirect_uri=url_for('oauth2callback', _external=True)
+                )
+                
+                # Instead of storing the entire flow object, store just the necessary state
+                auth_url, state = flow.authorization_url(prompt='consent')
+                session['oauth_state'] = state
+                session['credentials_path'] = filepath
+                
+                logger.debug(f"Starting OAuth flow with URL: {auth_url}")
+                return redirect(auth_url)
+                
             except Exception as e:
                 logger.error(f"Authentication error: {str(e)}")
                 flash(f'Authentication error: {str(e)}')
-            
-            flash('Credentials uploaded successfully')
-            return redirect(url_for('index'))
+                return redirect(url_for('index'))
             
         except json.JSONDecodeError:
             logger.error("Invalid JSON file uploaded")
@@ -271,15 +280,30 @@ def upload_credentials():
         flash(f'Upload error: {str(e)}')
         return redirect(url_for('index'))
 
+
 @app.route('/oauth2callback')
 def oauth2callback():
-    """Handle OAuth callback."""
-    flow = session.get('current_flow')
-    if not flow:
-        logger.error("OAuth flow not found in session")
-        return 'Error: OAuth flow not found', 400
-        
+    """Handle OAuth callback with state verification."""
     try:
+        # Verify state
+        if 'oauth_state' not in session:
+            logger.error("OAuth state not found in session")
+            return 'Error: OAuth flow not found', 400
+            
+        credentials_path = session.get('credentials_path')
+        if not credentials_path:
+            logger.error("Credentials path not found in session")
+            return 'Error: Invalid OAuth flow', 400
+            
+        # Recreate flow with stored state
+        flow = Flow.from_client_secrets_file(
+            credentials_path,
+            scopes=SCOPES,
+            state=session['oauth_state'],
+            redirect_uri=url_for('oauth2callback', _external=True)
+        )
+        
+        # Complete the flow
         flow.fetch_token(authorization_response=request.url)
         
         user_id = session.get('user_id')
@@ -297,8 +321,9 @@ def oauth2callback():
         with open(sync_tool.get_token_path(), 'w') as token:
             token.write(creds.to_json())
             
-        # Clean up
-        session.pop('current_flow', None)
+        # Clean up session
+        session.pop('oauth_state', None)
+        session.pop('credentials_path', None)
         
         logger.debug(f"Successfully completed OAuth flow for user: {user_id}")
         flash('Successfully authenticated with Google Drive!')
