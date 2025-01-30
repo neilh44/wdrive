@@ -2,7 +2,10 @@ services:
   - type: web
     name: whatsapp-drive-sync
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      mkdir -p user_credentials
+      mkdir -p templates
+      pip install -r requirements.txt
     startCommand: python app.py
     envVars:
       - key: PYTHON_VERSION
@@ -12,8 +15,8 @@ services:
       - key: SECRET_KEY
         sync: false
     disk:
-      name: user-credentials
-      mountPath: /app/user_credentials
+      name: user-storage
+      mountPath: /opt/render/project/src/user_credentials
       sizeGB: 1
     healthCheckPath: /health
     autoDeploy: true
