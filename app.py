@@ -23,6 +23,7 @@ import re
 from datetime import datetime
 import logging
 from threading import Thread
+import uuid 
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -286,6 +287,97 @@ def background_sync(sync_tool):
             logger.error(f"Error in background sync: {str(e)}")
         time.sleep(30)  # Wait 30 seconds between attempts
 
+@app.route('/')
+def index():
+    """Render the main page."""
+    # Generate a user ID if not present in session
+    if 'user_id' not in session:
+        session['user_id'] = str(uuid.uuid4())
+        logger.debug(f"Created new user session: {session['user_id']}")
+    
+    # Get sync status if available
+    user_id = session.get('user_id')
+    sync_status = None
+    if user_id in user_sync_tools:
+        sync_status = user_sync_tools[user_id].sync_status
+        logger.debug(f"Retrieved sync status for user: {user_id}")
+    
+    return render_template('index.html', sync_status=sync_status)
+
+
+@app.route('/status')
+def get_status():
+    """Get the current sync status."""
+    try:
+        user_id = session.get('user_id')
+        if not user_id or user_id not in user_sync_tools:
+            logger.debug(f"No sync status available for user: {user_id}")
+            return jsonify({
+                'is_running': False,
+                'last_synced': None,
+                'total_files_synced': 0,
+                'sync_directory': None,
+                'last_error': None
+            })
+            
+        sync_tool = user_sync_tools[user_id]
+        logger.debug(f"Returning sync status for user: {user_id}")
+        return jsonify(sync_tool.sync_status)
+        
+    except Exception as e:
+        logger.error(f"Error getting status: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+@app.route('/oauth2callback')
+def oauth2callback():
+    """Handle OAuth2 callback."""
+    try:
+        if 'error' in request.args:
+            logger.error(f"OAuth error: {request.args['error']}")
+            flash('Authentication failed.', 'error')
+            return redirect(url_for('index'))
+            
+        if 'code' not in request.args:
+            logger.error("No code in OAuth callback")
+            flash('Authentication failed - no code received.', 'error')
+            return redirect(url_for('index'))
+            
+        user_id = session.get('user_id')
+        if not user_id or user_id not in user_sync_tools:
+            logger.error(f"Invalid user session in OAuth callback: {user_id}")
+            flash('Session expired. Please try again.', 'error')
+            return redirect(url_for('index'))
+            
+        sync_tool = user_sync_tools[user_id]
+        
+        flow = Flow.from_client_secrets_file(
+            sync_tool.get_credentials_path(),
+            scopes=SCOPES,
+            redirect_uri=url_for('oauth2callback', _external=True)
+        )
+        
+        flow.fetch_token(authorization_response=request.url)
+        credentials = flow.credentials
+        
+        # Save the credentials
+        with open(sync_tool.get_token_path(), 'w') as token:
+            token.write(credentials.to_json())
+            
+        # Initialize drive service
+        sync_tool.drive_service = build('drive', 'v3', credentials=credentials)
+        
+        flash('Successfully authenticated with Google Drive!', 'success')
+        logger.debug(f"OAuth flow completed successfully for user: {user_id}")
+        return redirect(url_for('index'))
+        
+    except Exception as e:
+        logger.error(f"Error in OAuth callback: {str(e)}")
+        flash(f'Authentication error: {str(e)}', 'error')
+        return redirect(url_for('index'))
+
         
 @app.route('/upload_credentials', methods=['POST'])
 def upload_credentials():
@@ -465,6 +557,11 @@ def init_application():
     try:
         # Ensure required directories exist
         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+        
+        # Ensure templates directory exists
+        template_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates')
+        os.makedirs(template_dir, exist_ok=True)
+        
         logger.info("Application initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing application: {str(e)}")
