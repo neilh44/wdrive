@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(16))
 
+DEFAULT_WHATSAPP_DIR = os.path.expanduser('~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media')
+
 # Configuration constants
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 UPLOAD_FOLDER = 'user_credentials'
@@ -469,6 +471,30 @@ def upload_credentials():
         flash(f'Upload error: {str(e)}')
         return redirect(url_for('index'))
 
+import os
+
+# Add this constant near the other configuration constants
+DEFAULT_WHATSAPP_DIR = os.path.expanduser('~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media')
+
+class UserWhatsAppSync:
+    def __init__(self, user_id):
+        """Initialize with error handling."""
+        try:
+            self.user_id = user_id
+            self.drive_service = None
+            self.sync_status = {
+                'is_running': False,
+                'last_synced': None,
+                'total_files_synced': 0,
+                'last_error': None,
+                'sync_directory': DEFAULT_WHATSAPP_DIR  # Set default directory
+            }
+            self.last_synced_files = set()  # Track synced files
+            logger.debug(f"Successfully initialized sync tool for user: {user_id} with default directory: {DEFAULT_WHATSAPP_DIR}")
+        except Exception as e:
+            logger.error(f"Error initializing sync tool: {str(e)}")
+            raise
+
 @app.route('/set_sync_directory', methods=['POST'])
 def set_sync_directory():
     """Set sync directory."""
@@ -484,9 +510,17 @@ def set_sync_directory():
             return jsonify({'status': 'error', 'message': 'Please upload credentials first'}), 400
             
         directory = request.form.get('directory')
-        if not directory:
-            logger.error("No directory provided")
-            return jsonify({'status': 'error', 'message': 'No directory provided'}), 400
+        if directory:
+            # Expand the path if it's provided
+            directory = os.path.expanduser(directory)
+        else:
+            # Use default WhatsApp directory if none provided
+            directory = DEFAULT_WHATSAPP_DIR
+            
+        # Verify directory exists
+        if not os.path.exists(directory):
+            logger.error(f"Directory does not exist: {directory}")
+            return jsonify({'status': 'error', 'message': 'Directory not found'}), 400
             
         # Update sync directory
         sync_tool.sync_status['sync_directory'] = directory
@@ -496,7 +530,7 @@ def set_sync_directory():
     except Exception as e:
         logger.error(f"Error in set_sync_directory: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
-
+    
 @app.route('/start', methods=['POST'])
 def start_sync():
     """Start the sync service for a user."""
