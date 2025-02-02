@@ -6,6 +6,7 @@
     <title>WhatsApp Drive Sync</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
+        /* Keep existing styles */
         .file-input-wrapper {
             position: relative;
             overflow: hidden;
@@ -24,7 +25,6 @@
             font-size: 0.875rem;
             color: #4a5568;
         }
-        /* Add loading spinner */
         .loading-spinner {
             display: none;
             width: 20px;
@@ -39,7 +39,6 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
-        /* Add disabled state styles */
         .button-disabled {
             opacity: 0.5;
             cursor: not-allowed;
@@ -48,24 +47,16 @@
 </head>
 <body class="bg-gray-100">
     <div class="container mx-auto px-4 py-8 max-w-3xl">
+        <!-- Keep existing header -->
         <h1 class="text-3xl font-bold mb-8 text-center">WhatsApp Drive Sync Setup</h1>
         
-        <div id="flashMessages" class="mb-4">
-            {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                    {% for category, message in messages %}
-                        <div class="bg-{{ category }}-100 border-l-4 border-{{ category }}-500 text-{{ category }}-700 p-4 mb-4">
-                            {{ message }}
-                        </div>
-                    {% endfor %}
-                {% endif %}
-            {% endwith %}
-        </div>
+        <div id="flashMessages" class="mb-4"></div>
         
         <div class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
-            <!-- Step 1: Credentials -->
+            <!-- Step 1: Keep existing credentials section -->
             <h2 class="text-xl font-semibold mb-4">Step 1: Upload Google Drive Credentials</h2>
             <div class="mb-6 p-4 bg-gray-50 rounded border border-gray-200">
+                <!-- Keep existing instructions -->
                 <p class="text-sm text-gray-600 mb-4">
                     To get your credentials.json:
                 </p>
@@ -79,6 +70,7 @@
                 </ol>
             </div>
             <form action="{{ url_for('upload_credentials') }}" method="post" enctype="multipart/form-data" class="mb-6" id="credentialsForm">
+                <!-- Keep existing form -->
                 <div class="mb-4">
                     <div class="file-input-wrapper">
                         <input type="file" 
@@ -102,27 +94,37 @@
                 </button>
             </form>
             
-            <!-- Step 2: Directory Setup -->
+            <!-- Step 2: Modified Directory Setup with both options -->
             <h2 class="text-xl font-semibold mb-4">Step 2: Set Sync Directory</h2>
-            <form id="syncDirForm" class="mb-6">
-                <div class="mb-4">
-                    <label class="block text-gray-700 text-sm font-bold mb-2" for="directory">
-                        WhatsApp Media Directory
-                    </label>
-                    <input type="text" 
-                           name="directory" 
-                           id="directory" 
-                           required
-                           placeholder="Enter full path to WhatsApp Media directory"
-                           class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+            <div class="mb-6">
+                <div class="mb-4 p-4 bg-gray-50 rounded border border-gray-200">
+                    <h3 class="text-lg font-medium mb-2">Option 1: Select Directory</h3>
+                    <button onclick="selectDirectory()" id="dirSelectButton" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                        Select WhatsApp Media Directory
+                    </button>
+                    <p id="selectedDirPath" class="text-sm text-gray-600 mt-2"></p>
                 </div>
-                <button type="submit" id="setDirButton" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
-                    Set Directory
-                </button>
+
+                <div class="p-4 bg-gray-50 rounded border border-gray-200">
+                    <h3 class="text-lg font-medium mb-2">Option 2: Enter Directory Path</h3>
+                    <form id="manualDirForm" class="space-y-4">
+                        <div>
+                            <input type="text" 
+                                   id="manualDirPath" 
+                                   placeholder="Enter WhatsApp Media directory path" 
+                                   class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                                   value="~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media">
+                            <p class="text-sm text-gray-500 mt-1">Default path shown for macOS</p>
+                        </div>
+                        <button type="submit" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                            Set Manual Path
+                        </button>
+                    </form>
+                </div>
                 <span id="dirSpinner" class="loading-spinner"></span>
-            </form>
+            </div>
             
-            <!-- Step 3: Sync Controls -->
+            <!-- Keep existing sync controls -->
             <h2 class="text-xl font-semibold mb-4">Step 3: Control Sync Service</h2>
             <div class="flex space-x-4">
                 <button onclick="startSync()" id="startButton" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
@@ -135,7 +137,7 @@
             </div>
         </div>
         
-        <!-- Status Display -->
+        <!-- Keep existing status display -->
         <div id="statusDisplay" class="bg-white shadow-md rounded px-8 pt-6 pb-8">
             <h2 class="text-xl font-semibold mb-4">Sync Status</h2>
             <div id="statusContent" class="space-y-2">
@@ -149,12 +151,84 @@
     </div>
 
     <script>
-        // Handle file selection
+        // Directory handling
+        let directoryHandle = null;
+
+        // Handle manual directory form submission
+        document.getElementById('manualDirForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const dirPath = document.getElementById('manualDirPath').value;
+            await setDirectory(dirPath);
+        });
+
+        async function selectDirectory() {
+            try {
+                // Check if the File System Access API is supported
+                if (!('showDirectoryPicker' in window)) {
+                    showNotification('Your browser does not support the File System Access API. Please use a modern browser like Chrome.', 'error');
+                    return;
+                }
+
+                const dirHandle = await window.showDirectoryPicker({
+                    mode: 'read'
+                });
+                
+                directoryHandle = dirHandle;
+                const dirPath = dirHandle.name;
+                document.getElementById('selectedDirPath').textContent = `Selected directory: ${dirPath}`;
+                
+                // Send directory handle to backend
+                await setDirectory(dirHandle);
+                
+                showNotification('Directory selected successfully!', 'success');
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    // User cancelled the selection
+                    return;
+                }
+                console.error('Error selecting directory:', error);
+                showNotification('Error selecting directory', 'error');
+            }
+        }
+
+        async function setDirectory(dirPath) {
+            const spinner = document.getElementById('dirSpinner');
+            const buttons = document.querySelectorAll('button');
+            
+            spinner.style.display = 'inline-block';
+            buttons.forEach(button => button.classList.add('button-disabled'));
+            
+            try {
+                const response = await fetch('/set_sync_directory', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: `directory=${encodeURIComponent(dirPath)}`
+                });
+                
+                const data = await response.json();
+                if (data.status === 'success') {
+                    showNotification('Directory set successfully!', 'success');
+                    document.getElementById('selectedDirPath').textContent = `Selected directory: ${dirPath}`;
+                    updateStatus();
+                } else {
+                    showNotification(data.message || 'Error setting directory', 'error');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                showNotification('Error setting directory', 'error');
+            } finally {
+                spinner.style.display = 'none';
+                buttons.forEach(button => button.classList.remove('button-disabled'));
+            }
+        }
+
+        // Keep existing functions
         function handleFileSelect(input) {
             const fileName = input.files[0]?.name || '';
             document.getElementById('selectedFileName').textContent = fileName ? `Selected file: ${fileName}` : '';
             
-            // Validate file
             if (fileName && !fileName.toLowerCase().endsWith('.json')) {
                 showNotification('Please select a valid JSON file', 'error');
                 input.value = '';
@@ -162,50 +236,7 @@
             }
         }
 
-        // Form submission handlers
-        document.getElementById('credentialsForm').onsubmit = function(e) {
-            const spinner = document.getElementById('uploadSpinner');
-            const button = document.getElementById('uploadButton');
-            spinner.style.display = 'inline-block';
-            button.classList.add('button-disabled');
-        };
-
-        document.getElementById('syncDirForm').onsubmit = function(e) {
-            e.preventDefault();
-            const spinner = document.getElementById('dirSpinner');
-            const button = document.getElementById('setDirButton');
-            const directory = document.getElementById('directory').value;
-            
-            spinner.style.display = 'inline-block';
-            button.classList.add('button-disabled');
-            
-            fetch('/set_sync_directory', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: `directory=${encodeURIComponent(directory)}`
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.status === 'success') {
-                    showNotification('Directory set successfully!', 'success');
-                    updateStatus();
-                } else {
-                    showNotification(data.message || 'Error setting directory', 'error');
-                }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                showNotification('Error setting directory', 'error');
-            })
-            .finally(() => {
-                spinner.style.display = 'none';
-                button.classList.remove('button-disabled');
-            });
-        };
-
-        // Sync control functions
+        // Keep other existing functions (startSync, stopSync, updateStatus, showNotification)
         function startSync() {
             const spinner = document.getElementById('syncSpinner');
             const button = document.getElementById('startButton');
@@ -264,7 +295,6 @@
             });
         }
 
-        // Status update function
         function updateStatus() {
             fetch('/status')
                 .then(response => response.json())
@@ -288,7 +318,6 @@
                 });
         }
 
-        // Notification function
         function showNotification(message, type = 'success') {
             const notification = document.createElement('div');
             notification.className = `fixed top-4 right-4 p-4 rounded shadow-lg ${

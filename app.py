@@ -1,5 +1,6 @@
 import os
 import time
+import asyncio
 from flask import (
     Flask, 
     jsonify, 
@@ -10,6 +11,7 @@ from flask import (
     url_for, 
     session
 )
+from flask_cors import CORS
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
@@ -24,16 +26,18 @@ from datetime import datetime
 import logging
 from threading import Thread
 import uuid 
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+# Allow OAuth2 to work without HTTPS in development
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+
 # Initialize Flask app
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(16))
-
-DEFAULT_WHATSAPP_DIR = os.path.expanduser('~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media')
 
 # Configuration constants
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
@@ -61,19 +65,48 @@ class UserWhatsAppSync:
                 'last_synced': None,
                 'total_files_synced': 0,
                 'last_error': None,
-                'sync_directory': None
+                'sync_directory': None,
+                'browser_dir_handle': None  # New field for browser directory handle
             }
-            self.last_synced_files = set()  # Track synced files
+            self.last_synced_files = set()
             logger.debug(f"Successfully initialized sync tool for user: {user_id}")
         except Exception as e:
             logger.error(f"Error initializing sync tool: {str(e)}")
             raise
-        
+
     def get_credentials_path(self):
         return os.path.join(UPLOAD_FOLDER, f'credentials_{self.user_id}.json')
         
     def get_token_path(self):
         return os.path.join(UPLOAD_FOLDER, f'token_{self.user_id}.json')
+
+    async def read_file_handle(self, file_handle):
+        """Read file content from browser file handle."""
+        try:
+            file = await file_handle.getFile()
+            content = await file.text()
+            return content
+        except Exception as e:
+            logger.error(f"Error reading file handle: {str(e)}")
+            raise
+
+    async def list_directory_contents(self, dir_handle):
+        """List contents of a directory using browser file handle."""
+        contents = []
+        try:
+            async for entry in dir_handle.values():
+                if entry.kind == 'file':
+                    contents.append({
+                        'name': entry.name,
+                        'type': 'file',
+                        'handle': entry
+                    })
+                elif entry.kind == 'directory':
+                    subcontents = await self.list_directory_contents(entry)
+                    contents.extend(subcontents)
+        except Exception as e:
+            logger.error(f"Error listing directory contents: {str(e)}")
+        return contents
 
     def authenticate(self):
         """Handles Google Drive authentication for specific user."""
@@ -85,7 +118,6 @@ class UserWhatsAppSync:
                 with open(token_path, 'r') as token:
                     creds_data = json.load(token)
                     creds = Credentials.from_authorized_user_info(creds_data, SCOPES)
-                logger.debug(f"Loaded existing credentials for user: {self.user_id}")
             except Exception as e:
                 logger.error(f"Error loading credentials: {str(e)}")
                 raise
@@ -94,14 +126,12 @@ class UserWhatsAppSync:
             if creds and creds.expired and creds.refresh_token:
                 try:
                     creds.refresh(Request())
-                    logger.debug(f"Refreshed expired credentials for user: {self.user_id}")
                 except Exception as e:
                     logger.error(f"Error refreshing credentials: {str(e)}")
                     raise
             else:
                 credentials_path = self.get_credentials_path()
                 if not os.path.exists(credentials_path):
-                    logger.error(f"Credentials file not found for user: {self.user_id}")
                     raise Exception("Please upload credentials.json first")
                     
                 flow = Flow.from_client_secrets_file(
@@ -112,13 +142,11 @@ class UserWhatsAppSync:
                 
                 auth_url, _ = flow.authorization_url(prompt='consent')
                 session['current_flow'] = flow
-                logger.debug(f"Started new OAuth flow for user: {self.user_id}")
                 return auth_url
 
             try:
                 with open(token_path, 'w') as token:
                     token.write(creds.to_json())
-                logger.debug(f"Saved new credentials for user: {self.user_id}")
             except Exception as e:
                 logger.error(f"Error saving credentials: {str(e)}")
                 raise
@@ -156,27 +184,49 @@ class UserWhatsAppSync:
             logger.error(f"Error creating folder {folder_name}: {str(e)}")
             raise
 
-    def get_folder_structure(self, file_path):
-        """Get the appropriate folder structure for a file."""
+    async def upload_file(self, file_handle, relative_path=''):
+        """Upload a single file to Google Drive using browser file handle."""
         try:
-            base_folder_id = self.create_folder_if_not_exists('WhatsApp Backup')
-            relative_path = os.path.relpath(os.path.dirname(file_path), self.sync_status['sync_directory'])
+            if file_handle in self.last_synced_files:
+                logger.debug(f"File already synced: {file_handle.name}")
+                return True
+
+            # Create folder structure
+            current_folder_id = await self.get_folder_structure(relative_path)
             
-            if relative_path == '.':
-                return base_folder_id
-                
-            current_folder_id = base_folder_id
-            path_parts = relative_path.split(os.path.sep)
+            # Read file content
+            file_content = await self.read_file_handle(file_handle)
             
-            for folder_name in path_parts:
-                if folder_name:
-                    current_folder_id = self.create_folder_if_not_exists(folder_name, current_folder_id)
-                    
-            return current_folder_id
+            # Prepare file metadata
+            file_metadata = {
+                'name': file_handle.name,
+                'parents': [current_folder_id]
+            }
+            
+            # Upload to Google Drive
+            media = MediaFileUpload(
+                file_content,
+                mimetype=mimetypes.guess_type(file_handle.name)[0],
+                resumable=True
+            )
+            
+            self.drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+            
+            self.last_synced_files.add(file_handle)
+            self.sync_status['total_files_synced'] += 1
+            self.sync_status['last_synced'] = datetime.now().isoformat()
+            
+            return True
             
         except Exception as e:
-            logger.error(f"Error creating folder structure: {str(e)}")
-            raise
+            logger.error(f"Error uploading {file_handle.name}: {str(e)}")
+            self.sync_status['last_error'] = str(e)
+            return False
+
 
     def upload_file(self, file_path):
         """Upload a single file to Google Drive."""
@@ -191,16 +241,26 @@ class UserWhatsAppSync:
                 return True
                 
             # Get parent folder ID
-            parent_folder_id = self.get_folder_structure(file_path)
+            base_folder_id = self.create_folder_if_not_exists('WhatsApp Backup')
+            relative_path = os.path.relpath(os.path.dirname(file_path), self.sync_status['sync_directory'])
+            
+            current_folder_id = base_folder_id
+            if relative_path != '.':
+                for folder_name in relative_path.split(os.path.sep):
+                    if folder_name:
+                        current_folder_id = self.create_folder_if_not_exists(folder_name, current_folder_id)
             
             # Prepare file metadata
             file_metadata = {
                 'name': os.path.basename(file_path),
-                'parents': [parent_folder_id]
+                'parents': [current_folder_id]
             }
             
-            # Prepare media
+            # Prepare media upload
             mime_type = mimetypes.guess_type(file_path)[0]
+            if mime_type is None:
+                mime_type = 'application/octet-stream'
+                
             media = MediaFileUpload(
                 file_path,
                 mimetype=mime_type,
@@ -208,11 +268,12 @@ class UserWhatsAppSync:
             )
             
             # Upload file
-            self.drive_service.files().create(
+            file = self.drive_service.files().create(
                 body=file_metadata,
                 media_body=media,
-                fields='id').execute()
-                
+                fields='id'
+            ).execute()
+            
             # Update tracking
             self.last_synced_files.add(file_path)
             self.sync_status['total_files_synced'] += 1
@@ -225,6 +286,7 @@ class UserWhatsAppSync:
             logger.error(f"Error uploading {file_path}: {str(e)}")
             self.sync_status['last_error'] = str(e)
             return False
+
 
     def sync_files(self):
         """Sync files from WhatsApp directory to Google Drive."""
@@ -240,14 +302,17 @@ class UserWhatsAppSync:
             return
             
         try:
+            directory = self.sync_status['sync_directory']
+            logger.debug(f"Syncing directory: {directory}")
+            
             # Verify directory exists and is readable
-            if not os.path.exists(self.sync_status['sync_directory']):
-                logger.error(f"Directory does not exist: {self.sync_status['sync_directory']}")
+            if not os.path.exists(directory):
+                logger.error(f"Directory does not exist: {directory}")
                 self.sync_status['last_error'] = "Directory not found"
                 return
                 
-            if not os.access(self.sync_status['sync_directory'], os.R_OK):
-                logger.error(f"Cannot read directory: {self.sync_status['sync_directory']}")
+            if not os.access(directory, os.R_OK):
+                logger.error(f"Cannot read directory: {directory}")
                 self.sync_status['last_error'] = "Cannot read directory"
                 return
                 
@@ -256,56 +321,193 @@ class UserWhatsAppSync:
                 logger.debug("Drive service not initialized, attempting authentication")
                 auth_result = self.authenticate()
                 if auth_result:
-                    logger.error(f"Authentication needed. Auth result: {auth_result}")
+                    logger.error("Authentication required")
                     self.sync_status['last_error'] = "Authentication required"
                     return
                     
             # Walk through directory and upload files
-            for root, _, files in os.walk(self.sync_status['sync_directory']):
+            total_files = 0
+            for root, _, files in os.walk(directory):
                 for filename in files:
                     if filename.startswith('.'):  # Skip hidden files
                         continue
                         
                     file_path = os.path.join(root, filename)
                     try:
-                        self.upload_file(file_path)
+                        logger.debug(f"Processing file: {file_path}")
+                        success = self.upload_file(file_path)
+                        if success:
+                            total_files += 1
+                            logger.debug(f"Successfully uploaded {file_path}")
                     except Exception as e:
                         logger.error(f"Error processing {file_path}: {str(e)}")
                         continue
                         
-            logger.debug("Sync iteration completed")
+            logger.debug(f"Sync iteration completed. Total files uploaded: {total_files}")
             
         except Exception as e:
             logger.error(f"Error in sync_files: {str(e)}")
             self.sync_status['last_error'] = str(e)
 
+
 def background_sync(sync_tool):
     """Background sync process."""
+    logger.debug("Starting background sync process")
     while sync_tool.sync_status['is_running']:
         try:
             sync_tool.sync_files()
             logger.debug("Completed sync iteration")
         except Exception as e:
             logger.error(f"Error in background sync: {str(e)}")
-        time.sleep(30)  # Wait 30 seconds between attempts
+        time.sleep(30)  # Wait 30 seconds between sync attempts
 
 @app.route('/')
 def index():
     """Render the main page."""
-    # Generate a user ID if not present in session
     if 'user_id' not in session:
         session['user_id'] = str(uuid.uuid4())
         logger.debug(f"Created new user session: {session['user_id']}")
     
-    # Get sync status if available
     user_id = session.get('user_id')
     sync_status = None
     if user_id in user_sync_tools:
         sync_status = user_sync_tools[user_id].sync_status
-        logger.debug(f"Retrieved sync status for user: {user_id}")
     
     return render_template('index.html', sync_status=sync_status)
 
+@app.route('/set_sync_directory', methods=['POST'])
+def set_sync_directory():
+    """Set sync directory using either browser directory handle or manual path."""
+    try:
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'status': 'error', 'message': 'Session expired'}), 401
+            
+        sync_tool = user_sync_tools.get(user_id)
+        if not sync_tool:
+            return jsonify({'status': 'error', 'message': 'Please upload credentials first'}), 400
+            
+        directory = request.form.get('directory')
+        if not directory:
+            return jsonify({'status': 'error', 'message': 'No directory provided'}), 400
+            
+        # Expand user path if it starts with ~
+        if directory.startswith('~'):
+            directory = os.path.expanduser(directory)
+            
+        # Verify directory exists and is accessible
+        if not os.path.exists(directory):
+            return jsonify({'status': 'error', 'message': 'Directory does not exist'}), 400
+            
+        if not os.path.isdir(directory):
+            return jsonify({'status': 'error', 'message': 'Path is not a directory'}), 400
+            
+        if not os.access(directory, os.R_OK):
+            return jsonify({'status': 'error', 'message': 'Directory is not readable'}), 400
+            
+        sync_tool.sync_status['sync_directory'] = directory
+        logger.debug(f"Set sync directory for user {user_id}: {directory}")
+        return jsonify({'status': 'success', 'message': 'Sync directory updated'})
+        
+    except Exception as e:
+        logger.error(f"Error in set_sync_directory: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/upload_credentials', methods=['POST'])
+def upload_credentials():
+    """Handle credentials.json upload."""
+    try:
+        if 'credentials' not in request.files:
+            flash('No file provided')
+            return redirect(url_for('index'))
+            
+        file = request.files['credentials']
+        if file.filename == '':
+            flash('No file selected')
+            return redirect(url_for('index'))
+            
+        if not allowed_file(file.filename):
+            flash('Invalid file type. Only .json files are allowed.')
+            return redirect(url_for('index'))
+            
+        user_id = session.get('user_id')
+        if not user_id:
+            flash('Session expired')
+            return redirect(url_for('index'))
+            
+        # Initialize sync tool
+        sync_tool = UserWhatsAppSync(user_id)
+        user_sync_tools[user_id] = sync_tool
+        
+        # Save credentials file
+        filename = f'credentials_{user_id}.json'
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(filepath)
+        
+        # Start OAuth flow
+        flow = Flow.from_client_secrets_file(
+            filepath,
+            scopes=SCOPES,
+            redirect_uri=url_for('oauth2callback', _external=True)
+        )
+        
+        auth_url, state = flow.authorization_url(prompt='consent')
+        session['oauth_state'] = state
+        session['credentials_path'] = filepath
+        
+        return redirect(auth_url)
+        
+    except Exception as e:
+        logger.error(f"Error in upload_credentials: {str(e)}")
+        flash(f'Upload error: {str(e)}')
+        return redirect(url_for('index'))
+
+@app.route('/start', methods=['POST'])
+def start_sync():
+    """Start the sync service."""
+    try:
+        user_id = session.get('user_id')
+        if not user_id or user_id not in user_sync_tools:
+            return jsonify({'status': 'error', 'message': 'Please set up credentials first'}), 400
+            
+        sync_tool = user_sync_tools[user_id]
+        
+        if sync_tool.sync_status['is_running']:
+            return jsonify({'status': 'success', 'message': 'Sync already running'})
+            
+        if not sync_tool.sync_status['sync_directory']:
+            return jsonify({'status': 'error', 'message': 'Please set sync directory first'}), 400
+            
+        sync_tool.sync_status['is_running'] = True
+        
+        # Start background sync
+        sync_thread = Thread(target=background_sync, args=(sync_tool,))
+        sync_thread.daemon = True
+        sync_thread.start()
+        logger.debug("Started background sync thread")
+        
+        return jsonify({'status': 'success', 'message': 'Sync service started'})
+        
+    except Exception as e:
+        logger.error(f"Error in start_sync: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/stop', methods=['POST'])
+def stop_sync():
+    """Stop the sync service."""
+    try:
+        user_id = session.get('user_id')
+        if not user_id or user_id not in user_sync_tools:
+            return jsonify({'status': 'error', 'message': 'Service not running'}), 400
+            
+        sync_tool = user_sync_tools[user_id]
+        sync_tool.sync_status['is_running'] = False
+        
+        return jsonify({'status': 'success', 'message': 'Sync service stopped'})
+        
+    except Exception as e:
+        logger.error(f"Error in stop_sync: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/status')
 def get_status():
@@ -380,212 +582,6 @@ def oauth2callback():
         flash(f'Authentication error: {str(e)}', 'error')
         return redirect(url_for('index'))
 
-        
-@app.route('/upload_credentials', methods=['POST'])
-def upload_credentials():
-    """Handle credentials.json upload with enhanced error logging."""
-    logger.debug("Starting credentials upload")
-    logger.debug(f"Request files: {request.files}")
-    logger.debug(f"Request form: {request.form}")
-    
-    try:
-        if 'credentials' not in request.files:
-            logger.error("No 'credentials' field in request.files")
-            logger.debug(f"Available fields: {list(request.files.keys())}")
-            flash('No file provided')
-            return redirect(url_for('index'))
-            
-        file = request.files['credentials']
-        logger.debug(f"Received file: {file.filename}")
-        logger.debug(f"Content type: {file.content_type}")
-        
-        if file.filename == '':
-            logger.error("Empty filename provided")
-            flash('No file selected')
-            return redirect(url_for('index'))
-            
-        if not allowed_file(file.filename):
-            logger.error(f"Invalid file type: {file.filename}")
-            flash('Invalid file type. Only .json files are allowed.')
-            return redirect(url_for('index'))
-            
-        user_id = session.get('user_id')
-        logger.debug(f"Processing upload for user_id: {user_id}")
-        
-        if not user_id:
-            logger.error("No user_id in session during upload")
-            flash('Session expired')
-            return redirect(url_for('index'))
-            
-        try:
-            # Read file content to verify it's valid JSON
-            content = file.read()
-            file.seek(0)  # Reset file pointer
-            json.loads(content)  # Verify JSON is valid
-            
-            # Save file
-            filename = f'credentials_{user_id}.json'
-            filepath = os.path.join(UPLOAD_FOLDER, filename)
-            file.save(filepath)
-            logger.debug(f"Saved credentials file to: {filepath}")
-            
-            # Verify file was saved
-            if not os.path.exists(filepath):
-                raise Exception("File was not saved successfully")
-                
-            # Initialize sync tool
-            sync_tool = UserWhatsAppSync(user_id)
-            user_sync_tools[user_id] = sync_tool
-            
-            # Start OAuth flow
-            try:
-                flow = Flow.from_client_secrets_file(
-                    filepath,
-                    scopes=SCOPES,
-                    redirect_uri=url_for('oauth2callback', _external=True)
-                )
-                
-                auth_url, state = flow.authorization_url(prompt='consent')
-                session['oauth_state'] = state
-                session['credentials_path'] = filepath
-                
-                logger.debug(f"Starting OAuth flow with URL: {auth_url}")
-                return redirect(auth_url)
-                
-            except Exception as e:
-                logger.error(f"Authentication error: {str(e)}")
-                flash(f'Authentication error: {str(e)}')
-                return redirect(url_for('index'))
-            
-        except json.JSONDecodeError:
-            logger.error("Invalid JSON file uploaded")
-            flash('Invalid JSON file format')
-            return redirect(url_for('index'))
-        except Exception as e:
-            logger.error(f"Error saving file: {str(e)}")
-            flash(f'Error saving file: {str(e)}')
-            return redirect(url_for('index'))
-            
-    except Exception as e:
-        logger.error(f"Error in upload_credentials: {str(e)}")
-        flash(f'Upload error: {str(e)}')
-        return redirect(url_for('index'))
-
-import os
-
-# Add this constant near the other configuration constants
-DEFAULT_WHATSAPP_DIR = os.path.expanduser('~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media')
-
-class UserWhatsAppSync:
-    def __init__(self, user_id):
-        """Initialize with error handling."""
-        try:
-            self.user_id = user_id
-            self.drive_service = None
-            self.sync_status = {
-                'is_running': False,
-                'last_synced': None,
-                'total_files_synced': 0,
-                'last_error': None,
-                'sync_directory': DEFAULT_WHATSAPP_DIR  # Set default directory
-            }
-            self.last_synced_files = set()  # Track synced files
-            logger.debug(f"Successfully initialized sync tool for user: {user_id} with default directory: {DEFAULT_WHATSAPP_DIR}")
-        except Exception as e:
-            logger.error(f"Error initializing sync tool: {str(e)}")
-            raise
-
-@app.route('/set_sync_directory', methods=['POST'])
-def set_sync_directory():
-    """Set sync directory."""
-    try:
-        user_id = session.get('user_id')
-        if not user_id:
-            logger.error("No user_id in session during set_sync_directory")
-            return jsonify({'status': 'error', 'message': 'Session expired'}), 401
-            
-        sync_tool = user_sync_tools.get(user_id)
-        if not sync_tool:
-            logger.error(f"No sync tool found for user: {user_id}")
-            return jsonify({'status': 'error', 'message': 'Please upload credentials first'}), 400
-            
-        directory = request.form.get('directory')
-        if directory:
-            # Expand the path if it's provided
-            directory = os.path.expanduser(directory)
-        else:
-            # Use default WhatsApp directory if none provided
-            directory = DEFAULT_WHATSAPP_DIR
-            
-        # Verify directory exists
-        if not os.path.exists(directory):
-            logger.error(f"Directory does not exist: {directory}")
-            return jsonify({'status': 'error', 'message': 'Directory not found'}), 400
-            
-        # Update sync directory
-        sync_tool.sync_status['sync_directory'] = directory
-        logger.debug(f"Successfully set sync directory for user {user_id}: {directory}")
-        return jsonify({'status': 'success', 'message': 'Sync directory updated'})
-        
-    except Exception as e:
-        logger.error(f"Error in set_sync_directory: {str(e)}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    
-@app.route('/start', methods=['POST'])
-def start_sync():
-    """Start the sync service for a user."""
-    try:
-        user_id = session.get('user_id')
-        if not user_id or user_id not in user_sync_tools:
-            logger.error(f"Invalid user_id in start_sync: {user_id}")
-            return jsonify({'status': 'error', 'message': 'Please set up credentials first'}), 400
-            
-        sync_tool = user_sync_tools[user_id]
-        
-        # Check if already running
-        if sync_tool.sync_status['is_running']:
-            logger.debug(f"Sync already running for user: {user_id}")
-            return jsonify({'status': 'success', 'message': 'Sync already running'})
-            
-        if not sync_tool.sync_status['sync_directory']:
-            logger.error(f"No sync directory set for user: {user_id}")
-            return jsonify({'status': 'error', 'message': 'Please set sync directory first'}), 400
-            
-        # Start sync process
-        sync_tool.sync_status['is_running'] = True
-        
-        # Start background thread
-        sync_thread = Thread(target=background_sync, args=(sync_tool,))
-        sync_thread.daemon = True  # Thread will be terminated when main thread ends
-        sync_thread.start()
-        
-        logger.debug(f"Started sync process for user: {user_id}")
-        return jsonify({'status': 'success', 'message': 'Sync service started'})
-        
-    except Exception as e:
-        logger.error(f"Error in start_sync: {str(e)}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-@app.route('/stop', methods=['POST'])
-def stop_sync():
-    """Stop the sync service for a user."""
-    try:
-        user_id = session.get('user_id')
-        if not user_id or user_id not in user_sync_tools:
-            logger.error(f"Invalid user_id in stop_sync: {user_id}")
-            return jsonify({'status': 'error', 'message': 'Service not running'}), 400
-            
-        sync_tool = user_sync_tools[user_id]
-        sync_tool.sync_status['is_running'] = False
-        
-        logger.debug(f"Stopped sync process for user: {user_id}")
-        return jsonify({'status': 'success', 'message': 'Sync service stopped'})
-        
-    except Exception as e:
-        logger.error(f"Error in stop_sync: {str(e)}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-# Application initialization
 def init_application():
     """Initialize the application."""
     try:
@@ -595,6 +591,16 @@ def init_application():
         # Ensure templates directory exists
         template_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates')
         os.makedirs(template_dir, exist_ok=True)
+        
+        # Initialize logging
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.StreamHandler(),
+                logging.FileHandler('app.log')
+            ]
+        )
         
         logger.info("Application initialized successfully")
     except Exception as e:
@@ -607,6 +613,9 @@ if __name__ == '__main__':
     
     # Get port from environment variable or use default
     port = int(os.environ.get('PORT', 5000))
+    
+    # Enable CORS for development
+    CORS(app, resources={r"/*": {"origins": "*"}})
     
     # Run the application
     logger.info(f"Starting application on port {port}")
