@@ -383,28 +383,38 @@ def set_sync_directory():
     try:
         user_id = session.get('user_id')
         if not user_id:
+            logger.error("No user_id found in session")
             return jsonify({'status': 'error', 'message': 'Session expired'}), 401
             
         sync_tool = user_manager.get_sync_tool(user_id)
         if not sync_tool:
+            logger.error("No sync tool found for user")
             return jsonify({'status': 'error', 'message': 'Please upload credentials first'}), 400
             
         directory = request.form.get('directory')
+        logger.debug(f"Received directory path: {directory}")
+        
         if not directory:
+            logger.error("No directory provided in request")
             return jsonify({'status': 'error', 'message': 'No directory provided'}), 400
             
         if directory.startswith('~'):
             directory = os.path.expanduser(directory)
+            logger.debug(f"Expanded directory path: {directory}")
             
         if not os.path.exists(directory):
+            logger.error(f"Directory does not exist: {directory}")
             return jsonify({'status': 'error', 'message': 'Directory does not exist'}), 400
             
         if not os.path.isdir(directory):
+            logger.error(f"Path is not a directory: {directory}")
             return jsonify({'status': 'error', 'message': 'Path is not a directory'}), 400
             
         if not os.access(directory, os.R_OK):
+            logger.error(f"Directory is not readable: {directory}")
             return jsonify({'status': 'error', 'message': 'Directory is not readable'}), 400
             
+        logger.debug(f"Directory validation passed for: {directory}")
         sync_tool.sync_status['sync_directory'] = directory
         user_manager.store_user_session(user_id, sync_tool)
         logger.debug(f"Set sync directory for user {user_id}: {directory}")
@@ -602,6 +612,34 @@ def oauth2callback():
         flash(f'Authentication error: {str(e)}', 'error')
         return redirect(url_for('index'))
 
+@app.route('/debug_directory', methods=['POST'])
+def debug_directory():
+    """Debug endpoint to check directory access."""
+    try:
+        directory = request.form.get('directory')
+        debug_info = {
+            'cwd': os.getcwd(),
+            'directory_provided': directory,
+            'directory_exists': os.path.exists(directory) if directory else False,
+            'is_directory': os.path.isdir(directory) if directory else False,
+            'is_readable': os.access(directory, os.R_OK) if directory else False,
+            'process_uid': os.getuid(),
+            'process_gid': os.getgid(),
+            'directory_stat': str(os.stat(directory)) if directory and os.path.exists(directory) else None,
+            'parent_readable': os.access(os.path.dirname(directory), os.R_OK) if directory else False
+        }
+        
+        # Try to list directory contents if it exists
+        if directory and os.path.exists(directory) and os.path.isdir(directory):
+            try:
+                debug_info['directory_contents'] = os.listdir(directory)
+            except Exception as e:
+                debug_info['directory_contents_error'] = str(e)
+                
+        return jsonify(debug_info)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    
 @app.route('/health')
 def health_check():
     """Health check endpoint for Render."""
