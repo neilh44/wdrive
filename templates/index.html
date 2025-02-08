@@ -166,25 +166,70 @@
                     showNotification('Your browser does not support the File System Access API. Please use Chrome or Edge.', 'error');
                     return;
                 }
-    
-                const dirHandle = await window.showDirectoryPicker({
-                    mode: 'read'
-                });
-                
-                // Store the directory handle for future use
-                window.directoryHandle = dirHandle;
-    
-                // Verify this is the correct directory by checking for WhatsApp media files
+
+                // Path components for WhatsApp Media folder
+                const paths = [
+                    'Library',
+                    'Group Containers',
+                    'group.net.whatsapp.WhatsApp.shared',
+                    'Message',
+                    'Media'
+                ];
+
+                let currentHandle;
+                try {
+                    // Start at user's home directory
+                    currentHandle = await window.showDirectoryPicker({
+                        mode: 'read',
+                        startIn: 'home'
+                    });
+
+                    // Navigate through each path component
+                    for (const pathPart of paths) {
+                        try {
+                            currentHandle = await currentHandle.getDirectoryHandle(pathPart);
+                        } catch (error) {
+                            console.error(`Error accessing ${pathPart}:`, error);
+                            showNotification(`Cannot access ${pathPart} folder. Please select the WhatsApp Media folder manually.`, 'warning');
+                            
+                            // If automatic navigation fails, let user select manually
+                            currentHandle = await window.showDirectoryPicker({
+                                mode: 'read',
+                                startIn: 'home'
+                            });
+                            break;
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error navigating to WhatsApp folder:', error);
+                    // Fallback to manual selection
+                    currentHandle = await window.showDirectoryPicker({
+                        mode: 'read'
+                    });
+                }
+
+                // Store the directory handle
+                window.directoryHandle = currentHandle;
+
+                // Verify this is the correct directory
                 try {
                     let isWhatsAppDir = false;
-                    for await (const entry of dirHandle.values()) {
+                    let hasFiles = false;
+                    
+                    for await (const entry of currentHandle.values()) {
+                        hasFiles = true;
                         if (entry.kind === 'file' && 
                             (entry.name.startsWith('WhatsApp') || 
-                             entry.name.endsWith('.jpg') || 
-                             entry.name.endsWith('.mp4'))) {
+                            entry.name.endsWith('.jpg') || 
+                            entry.name.endsWith('.mp4'))) {
                             isWhatsAppDir = true;
                             break;
                         }
+                    }
+
+                    if (!hasFiles) {
+                        showNotification('Selected directory is empty.', 'warning');
+                        return;
                     }
                     
                     if (!isWhatsAppDir) {
@@ -194,7 +239,7 @@
                 } catch (error) {
                     console.error('Error verifying directory:', error);
                 }
-    
+
                 // Send directory info to server
                 const response = await fetch('/set_sync_directory', {
                     method: 'POST',
@@ -202,15 +247,15 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        directory: dirHandle.name,
+                        directory: currentHandle.name,
                         type: 'browser_handle'
                     })
                 });
-    
+
                 const data = await response.json();
                 if (data.status === 'success') {
-                    showNotification('Directory set successfully!', 'success');
-                    document.getElementById('selectedDirPath').textContent = `Selected directory: ${dirHandle.name}`;
+                    showNotification('Successfully connected to WhatsApp Media folder!', 'success');
+                    document.getElementById('selectedDirPath').textContent = `Selected directory: ${currentHandle.name}`;
                     updateStatus();
                 } else {
                     showNotification(data.message || 'Error setting directory', 'error');
@@ -223,19 +268,7 @@
                 showNotification('Error selecting directory', 'error');
             }
         }
-    
-        // File selection handling
-        function handleFileSelect(input) {
-            const fileName = input.files[0]?.name || '';
-            document.getElementById('selectedFileName').textContent = fileName ? `Selected file: ${fileName}` : '';
-            
-            if (fileName && !fileName.toLowerCase().endsWith('.json')) {
-                showNotification('Please select a valid JSON file', 'error');
-                input.value = '';
-                document.getElementById('selectedFileName').textContent = '';
-            }
-        }
-    
+        
         async function startSync() {
             const spinner = document.getElementById('syncSpinner');
             const button = document.getElementById('startButton');
