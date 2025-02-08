@@ -4,4 +4,3 @@ google-api-python-client
 werkzeug
 watchdog
 gunicorn
-flask_cors
