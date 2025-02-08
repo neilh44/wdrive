@@ -229,6 +229,9 @@
                     console.error('Error verifying directory:', error);
                 }
     
+                // Store the directory handle for future use
+                window.directoryHandle = dirHandle;
+    
                 // Send directory info to server
                 const response = await fetch('/set_sync_directory', {
                     method: 'POST',
@@ -245,7 +248,6 @@
                 if (data.status === 'success') {
                     showNotification('Directory set successfully!', 'success');
                     document.getElementById('selectedDirPath').textContent = `Selected directory: ${dirHandle.name}`;
-                    window.directoryHandle = dirHandle;
                     updateStatus();
                 } else {
                     showNotification(data.message || 'Error setting directory', 'error');
@@ -259,7 +261,7 @@
             }
         }
     
-        // File selection handling
+        // File handling
         function handleFileSelect(input) {
             const fileName = input.files[0]?.name || '';
             document.getElementById('selectedFileName').textContent = fileName ? `Selected file: ${fileName}` : '';
@@ -272,33 +274,95 @@
         }
     
         // Sync control functions
-        function startSync() {
+        async function startSync() {
             const spinner = document.getElementById('syncSpinner');
             const button = document.getElementById('startButton');
             
             spinner.style.display = 'inline-block';
             button.classList.add('button-disabled');
             
-            fetch('/start', {
-                method: 'POST'
-            })
-            .then(response => response.json())
-            .then(data => {
+            try {
+                // Check if we have a directory handle
+                if (!window.directoryHandle) {
+                    showNotification('Please select a directory first', 'error');
+                    return;
+                }
+    
+                // Start reading files from the directory
+                const files = [];
+                for await (const entry of window.directoryHandle.values()) {
+                    if (entry.kind === 'file') {
+                        try {
+                            const file = await entry.getFile();
+                            files.push({
+                                name: entry.name,
+                                size: file.size,
+                                type: file.type,
+                                lastModified: file.lastModified,
+                                handle: entry
+                            });
+                        } catch (error) {
+                            console.error('Error reading file:', error);
+                        }
+                    }
+                }
+    
+                // Start the sync process
+                const response = await fetch('/start', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        files: files.map(f => ({
+                            name: f.name,
+                            size: f.size,
+                            type: f.type,
+                            lastModified: f.lastModified
+                        }))
+                    })
+                });
+    
+                const data = await response.json();
                 if (data.status === 'success') {
                     showNotification('Sync service started successfully!', 'success');
+                    // Start the file upload process
+                    syncFiles(files);
                     updateStatus();
                 } else {
                     showNotification(data.message || 'Error starting sync', 'error');
                 }
-            })
-            .catch(error => {
+            } catch (error) {
                 console.error('Error:', error);
                 showNotification('Error starting sync', 'error');
-            })
-            .finally(() => {
+            } finally {
                 spinner.style.display = 'none';
                 button.classList.remove('button-disabled');
-            });
+            }
+        }
+    
+        async function syncFiles(files) {
+            for (const fileInfo of files) {
+                try {
+                    const file = await fileInfo.handle.getFile();
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    
+                    const response = await fetch('/upload_file', {
+                        method: 'POST',
+                        body: formData
+                    });
+    
+                    const result = await response.json();
+                    if (result.status === 'success') {
+                        console.log(`Successfully uploaded ${file.name}`);
+                    } else {
+                        console.error(`Failed to upload ${file.name}:`, result.message);
+                    }
+                } catch (error) {
+                    console.error(`Error uploading ${fileInfo.name}:`, error);
+                }
+            }
         }
     
         function stopSync() {

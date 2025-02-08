@@ -504,6 +504,82 @@ def start_sync():
         logger.error(f"Error in start_sync: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
     
+@app.route('/upload_file', methods=['POST'])
+def upload_file():
+    """Handle file upload from browser and send to Google Drive."""
+    try:
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'status': 'error', 'message': 'Session expired'}), 401
+            
+        sync_tool = user_manager.get_sync_tool(user_id)
+        if not sync_tool:
+            return jsonify({'status': 'error', 'message': 'Please initialize sync first'}), 400
+            
+        if 'file' not in request.files:
+            return jsonify({'status': 'error', 'message': 'No file provided'}), 400
+            
+        file = request.files['file']
+        if not file:
+            return jsonify({'status': 'error', 'message': 'Empty file'}), 400
+            
+        # Create a temporary file
+        import tempfile
+        temp_file = tempfile.NamedTemporaryFile(delete=False)
+        try:
+            file.save(temp_file.name)
+            
+            # Create or get base folder
+            base_folder_id = sync_tool.create_folder_if_not_exists('WhatsApp Backup')
+            
+            # Setup file metadata
+            file_metadata = {
+                'name': secure_filename(file.filename),
+                'parents': [base_folder_id]
+            }
+            
+            # Determine MIME type
+            mime_type = file.content_type or 'application/octet-stream'
+            
+            # Create upload media
+            media = MediaFileUpload(
+                temp_file.name,
+                mimetype=mime_type,
+                resumable=True
+            )
+            
+            # Upload the file
+            file_upload = sync_tool.drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+            
+            # Update sync status
+            sync_tool.sync_status['total_files_synced'] += 1
+            sync_tool.sync_status['last_synced'] = datetime.now().isoformat()
+            user_manager.store_user_session(user_id, sync_tool)
+            
+            logger.debug(f"Successfully uploaded file: {file.filename}")
+            
+            return jsonify({
+                'status': 'success',
+                'message': f'Successfully uploaded {file.filename}',
+                'file_id': file_upload.get('id')
+            })
+            
+        finally:
+            # Clean up temporary file
+            temp_file.close()
+            os.unlink(temp_file.name)
+            
+    except Exception as e:
+        logger.error(f"Error uploading file: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f'Error uploading file: {str(e)}'
+        }), 500
+    
 @app.route('/stop', methods=['POST'])
 def stop_sync():
     """Stop the sync service."""
