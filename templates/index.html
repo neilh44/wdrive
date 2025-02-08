@@ -157,45 +157,8 @@
         // Handle manual directory form submission
         document.getElementById('manualDirForm').addEventListener('submit', async function(e) {
             e.preventDefault();
-            const dirPath = document.getElementById('manualDirPath').value;
-            await setDirectory(dirPath);
+            await selectDirectory();
         });
-    
-        async function setDirectory(dirPath) {
-            const spinner = document.getElementById('dirSpinner');
-            const buttons = document.querySelectorAll('button');
-            
-            spinner.style.display = 'inline-block';
-            buttons.forEach(button => button.classList.add('button-disabled'));
-            
-            try {
-                const response = await fetch('/set_sync_directory', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        directory: dirPath,
-                        type: 'manual_path'
-                    })
-                });
-                
-                const data = await response.json();
-                if (data.status === 'success') {
-                    showNotification('Directory set successfully!', 'success');
-                    document.getElementById('selectedDirPath').textContent = `Selected directory: ${dirPath}`;
-                    updateStatus();
-                } else {
-                    showNotification(data.message || 'Error setting directory', 'error');
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                showNotification('Error setting directory', 'error');
-            } finally {
-                spinner.style.display = 'none';
-                buttons.forEach(button => button.classList.remove('button-disabled'));
-            }
-        }
     
         async function selectDirectory() {
             try {
@@ -208,6 +171,9 @@
                     mode: 'read'
                 });
                 
+                // Store the directory handle for future use
+                window.directoryHandle = dirHandle;
+    
                 // Verify this is the correct directory by checking for WhatsApp media files
                 try {
                     let isWhatsAppDir = false;
@@ -228,9 +194,6 @@
                 } catch (error) {
                     console.error('Error verifying directory:', error);
                 }
-    
-                // Store the directory handle for future use
-                window.directoryHandle = dirHandle;
     
                 // Send directory info to server
                 const response = await fetch('/set_sync_directory', {
@@ -261,7 +224,7 @@
             }
         }
     
-        // File handling
+        // File selection handling
         function handleFileSelect(input) {
             const fileName = input.files[0]?.name || '';
             document.getElementById('selectedFileName').textContent = fileName ? `Selected file: ${fileName}` : '';
@@ -273,7 +236,6 @@
             }
         }
     
-        // Sync control functions
         async function startSync() {
             const spinner = document.getElementById('syncSpinner');
             const button = document.getElementById('startButton');
@@ -288,7 +250,7 @@
                     return;
                 }
     
-                // Start reading files from the directory
+                // Collect all files from the directory
                 const files = [];
                 for await (const entry of window.directoryHandle.values()) {
                     if (entry.kind === 'file') {
@@ -298,13 +260,17 @@
                                 name: entry.name,
                                 size: file.size,
                                 type: file.type,
-                                lastModified: file.lastModified,
-                                handle: entry
+                                lastModified: file.lastModified
                             });
                         } catch (error) {
                             console.error('Error reading file:', error);
                         }
                     }
+                }
+    
+                if (files.length === 0) {
+                    showNotification('No files found in directory', 'warning');
+                    return;
                 }
     
                 // Start the sync process
@@ -313,21 +279,14 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({
-                        files: files.map(f => ({
-                            name: f.name,
-                            size: f.size,
-                            type: f.type,
-                            lastModified: f.lastModified
-                        }))
-                    })
+                    body: JSON.stringify({ files: files })
                 });
     
                 const data = await response.json();
                 if (data.status === 'success') {
-                    showNotification('Sync service started successfully!', 'success');
-                    // Start the file upload process
-                    syncFiles(files);
+                    showNotification('Sync started successfully!', 'success');
+                    // Start uploading files
+                    await uploadFiles(files);
                     updateStatus();
                 } else {
                     showNotification(data.message || 'Error starting sync', 'error');
@@ -341,10 +300,14 @@
             }
         }
     
-        async function syncFiles(files) {
+        async function uploadFiles(files) {
+            let uploadedCount = 0;
+            
             for (const fileInfo of files) {
                 try {
-                    const file = await fileInfo.handle.getFile();
+                    const entry = await window.directoryHandle.getFileHandle(fileInfo.name);
+                    const file = await entry.getFile();
+                    
                     const formData = new FormData();
                     formData.append('file', file);
                     
@@ -355,13 +318,17 @@
     
                     const result = await response.json();
                     if (result.status === 'success') {
-                        console.log(`Successfully uploaded ${file.name}`);
+                        uploadedCount++;
+                        showNotification(`Uploaded ${uploadedCount} of ${files.length} files`, 'success');
                     } else {
                         console.error(`Failed to upload ${file.name}:`, result.message);
                     }
                 } catch (error) {
                     console.error(`Error uploading ${fileInfo.name}:`, error);
                 }
+                
+                // Update status after each file
+                updateStatus();
             }
         }
     
@@ -421,7 +388,9 @@
         function showNotification(message, type = 'success') {
             const notification = document.createElement('div');
             notification.className = `fixed top-4 right-4 p-4 rounded shadow-lg ${
-                type === 'success' ? 'bg-green-500' : type === 'warning' ? 'bg-yellow-500' : 'bg-red-500'
+                type === 'success' ? 'bg-green-500' : 
+                type === 'warning' ? 'bg-yellow-500' : 
+                'bg-red-500'
             } text-white max-w-md z-50`;
             notification.textContent = message;
             document.body.appendChild(notification);
@@ -434,6 +403,6 @@
         // Initialize status updates
         setInterval(updateStatus, 5000);
         updateStatus();
-    </script>
+    </script>   
 </body>
 </html>

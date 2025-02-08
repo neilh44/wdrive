@@ -488,16 +488,21 @@ def start_sync():
             
         if not sync_tool.sync_status.get('sync_directory'):
             return jsonify({'status': 'error', 'message': 'Please set sync directory first'}), 400
-            
+
+        # Get the list of files from the request
+        data = request.get_json()
+        if not data or 'files' not in data:
+            return jsonify({'status': 'error', 'message': 'No files provided'}), 400
+
+        # Store file list in sync status
+        sync_tool.sync_status['pending_files'] = data['files']
         sync_tool.sync_status['is_running'] = True
+        sync_tool.sync_status['files_to_process'] = len(data['files'])
+        sync_tool.sync_status['files_processed'] = 0
+        
         user_manager.store_user_session(user_id, sync_tool)
         
-        # Start background sync
-        sync_thread = Thread(target=background_sync, args=(sync_tool,))
-        sync_thread.daemon = True
-        sync_thread.start()
-        logger.debug("Started background sync thread")
-        
+        logger.debug(f"Starting sync with {len(data['files'])} files to process")
         return jsonify({'status': 'success', 'message': 'Sync service started'})
         
     except Exception as e:
