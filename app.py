@@ -379,7 +379,7 @@ def index():
 
 @app.route('/set_sync_directory', methods=['POST'])
 def set_sync_directory():
-    """Set sync directory using browser's File System Access API data."""
+    """Set sync directory using either browser handle or manual path."""
     try:
         user_id = session.get('user_id')
         if not user_id:
@@ -389,21 +389,33 @@ def set_sync_directory():
         if not sync_tool:
             return jsonify({'status': 'error', 'message': 'Please upload credentials first'}), 400
             
-        # Get directory info from request
-        dir_info = request.json.get('directory')
-        if not dir_info:
-            return jsonify({'status': 'error', 'message': 'No directory information provided'}), 400
+        data = request.get_json()
+        if not data or 'directory' not in data or 'type' not in data:
+            return jsonify({'status': 'error', 'message': 'Invalid request data'}), 400
             
-        # Validate directory info
-        if not isinstance(dir_info, dict) or 'files' not in dir_info:
-            return jsonify({'status': 'error', 'message': 'Invalid directory information'}), 400
-            
-        # Store directory info in sync tool
-        sync_tool.sync_status['browser_dir_handle'] = dir_info
-        sync_tool.sync_status['sync_directory'] = dir_info['name']
-        user_manager.store_user_session(user_id, sync_tool)
+        directory = data['directory']
+        dir_type = data['type']
         
-        logger.debug(f"Set browser directory handle for user {user_id}: {dir_info['name']}")
+        if dir_type == 'manual_path':
+            # Handle manual path input
+            if directory.startswith('~'):
+                directory = os.path.expanduser(directory)
+                
+            directory = os.path.abspath(directory)
+            sync_tool.sync_status['sync_directory'] = directory
+            sync_tool.sync_status['directory_type'] = 'manual'
+            
+        elif dir_type == 'browser_handle':
+            # Handle browser File System API
+            sync_tool.sync_status['sync_directory'] = directory
+            sync_tool.sync_status['directory_type'] = 'browser'
+            sync_tool.sync_status['browser_handle'] = True
+            
+        else:
+            return jsonify({'status': 'error', 'message': 'Invalid directory type'}), 400
+            
+        user_manager.store_user_session(user_id, sync_tool)
+        logger.debug(f"Set directory for user {user_id}: {directory} (type: {dir_type})")
         return jsonify({'status': 'success', 'message': 'Sync directory updated'})
         
     except Exception as e:

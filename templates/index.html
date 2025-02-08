@@ -153,98 +153,14 @@
     <script>
         // Directory handling
         let directoryHandle = null;
-
+    
         // Handle manual directory form submission
         document.getElementById('manualDirForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             const dirPath = document.getElementById('manualDirPath').value;
             await setDirectory(dirPath);
         });
-
-
-
-        async function selectDirectory() {
-            try {
-                // Check if the File System Access API is supported
-                if (!('showDirectoryPicker' in window)) {
-                    showNotification('Your browser does not support the File System Access API. Please use a modern browser like Chrome.', 'error');
-                    return;
-                }
-
-                const dirHandle = await window.showDirectoryPicker({
-                    mode: 'read'
-                });
-                
-                // Verify this is the correct directory by checking for some WhatsApp media files
-                try {
-                    let isWhatsAppDir = false;
-                    for await (const entry of dirHandle.values()) {
-                        if (entry.kind === 'file' && 
-                            (entry.name.startsWith('WhatsApp') || 
-                            entry.name.endsWith('.jpg') || 
-                            entry.name.endsWith('.mp4'))) {
-                            isWhatsAppDir = true;
-                            break;
-                        }
-                    }
-                    
-                    if (!isWhatsAppDir) {
-                        showNotification('Selected directory does not appear to be a WhatsApp Media folder. Please select the correct directory.', 'warning');
-                        return;
-                    }
-                } catch (error) {
-                    console.error('Error verifying directory:', error);
-                }
-
-                // Create a FileSystemDirectoryHandle object to send to the server
-                const dirInfo = {
-                    name: dirHandle.name,
-                    kind: 'directory',
-                    files: []
-                };
-
-                // List all files in the directory
-                for await (const entry of dirHandle.values()) {
-                    if (entry.kind === 'file') {
-                        const file = await entry.getFile();
-                        dirInfo.files.push({
-                            name: entry.name,
-                            size: file.size,
-                            type: file.type,
-                            lastModified: file.lastModified
-                        });
-                    }
-                }
-
-                // Send directory info to server
-                const response = await fetch('/set_sync_directory', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ directory: dirInfo })
-                });
-
-                const data = await response.json();
-                if (data.status === 'success') {
-                    showNotification('Directory set successfully!', 'success');
-                    document.getElementById('selectedDirPath').textContent = `Selected directory: ${dirHandle.name}`;
-                    // Store the directory handle for future use
-                    window.directoryHandle = dirHandle;
-                    updateStatus();
-                } else {
-                    showNotification(data.message || 'Error setting directory', 'error');
-                }
-            } catch (error) {
-                if (error.name === 'AbortError') {
-                    // User cancelled the selection
-                    return;
-                }
-                console.error('Error selecting directory:', error);
-                showNotification('Error selecting directory', 'error');
-            }
-        }
-
+    
         async function setDirectory(dirPath) {
             const spinner = document.getElementById('dirSpinner');
             const buttons = document.querySelectorAll('button');
@@ -256,9 +172,12 @@
                 const response = await fetch('/set_sync_directory', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Content-Type': 'application/json',
                     },
-                    body: `directory=${encodeURIComponent(dirPath)}`
+                    body: JSON.stringify({
+                        directory: dirPath,
+                        type: 'manual_path'
+                    })
                 });
                 
                 const data = await response.json();
@@ -277,8 +196,70 @@
                 buttons.forEach(button => button.classList.remove('button-disabled'));
             }
         }
-
-        // Keep existing functions
+    
+        async function selectDirectory() {
+            try {
+                if (!('showDirectoryPicker' in window)) {
+                    showNotification('Your browser does not support the File System Access API. Please use Chrome or Edge.', 'error');
+                    return;
+                }
+    
+                const dirHandle = await window.showDirectoryPicker({
+                    mode: 'read'
+                });
+                
+                // Verify this is the correct directory by checking for WhatsApp media files
+                try {
+                    let isWhatsAppDir = false;
+                    for await (const entry of dirHandle.values()) {
+                        if (entry.kind === 'file' && 
+                            (entry.name.startsWith('WhatsApp') || 
+                             entry.name.endsWith('.jpg') || 
+                             entry.name.endsWith('.mp4'))) {
+                            isWhatsAppDir = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!isWhatsAppDir) {
+                        showNotification('Selected directory does not appear to be a WhatsApp Media folder.', 'warning');
+                        return;
+                    }
+                } catch (error) {
+                    console.error('Error verifying directory:', error);
+                }
+    
+                // Send directory info to server
+                const response = await fetch('/set_sync_directory', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        directory: dirHandle.name,
+                        type: 'browser_handle'
+                    })
+                });
+    
+                const data = await response.json();
+                if (data.status === 'success') {
+                    showNotification('Directory set successfully!', 'success');
+                    document.getElementById('selectedDirPath').textContent = `Selected directory: ${dirHandle.name}`;
+                    window.directoryHandle = dirHandle;
+                    updateStatus();
+                } else {
+                    showNotification(data.message || 'Error setting directory', 'error');
+                }
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    return;  // User cancelled the selection
+                }
+                console.error('Error selecting directory:', error);
+                showNotification('Error selecting directory', 'error');
+            }
+        }
+    
+        // File selection handling
         function handleFileSelect(input) {
             const fileName = input.files[0]?.name || '';
             document.getElementById('selectedFileName').textContent = fileName ? `Selected file: ${fileName}` : '';
@@ -289,8 +270,8 @@
                 document.getElementById('selectedFileName').textContent = '';
             }
         }
-
-        // Keep other existing functions (startSync, stopSync, updateStatus, showNotification)
+    
+        // Sync control functions
         function startSync() {
             const spinner = document.getElementById('syncSpinner');
             const button = document.getElementById('startButton');
@@ -319,7 +300,7 @@
                 button.classList.remove('button-disabled');
             });
         }
-
+    
         function stopSync() {
             const spinner = document.getElementById('syncSpinner');
             const button = document.getElementById('stopButton');
@@ -348,7 +329,8 @@
                 button.classList.remove('button-disabled');
             });
         }
-
+    
+        // Status and notification functions
         function updateStatus() {
             fetch('/status')
                 .then(response => response.json())
@@ -371,11 +353,11 @@
                     showNotification('Error updating status', 'error');
                 });
         }
-
+    
         function showNotification(message, type = 'success') {
             const notification = document.createElement('div');
             notification.className = `fixed top-4 right-4 p-4 rounded shadow-lg ${
-                type === 'success' ? 'bg-green-500' : 'bg-red-500'
+                type === 'success' ? 'bg-green-500' : type === 'warning' ? 'bg-yellow-500' : 'bg-red-500'
             } text-white max-w-md z-50`;
             notification.textContent = message;
             document.body.appendChild(notification);
@@ -384,7 +366,7 @@
                 notification.remove();
             }, 3000);
         }
-
+    
         // Initialize status updates
         setInterval(updateStatus, 5000);
         updateStatus();
