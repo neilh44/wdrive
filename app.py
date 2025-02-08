@@ -379,45 +379,31 @@ def index():
 
 @app.route('/set_sync_directory', methods=['POST'])
 def set_sync_directory():
-    """Set sync directory using either browser directory handle or manual path."""
+    """Set sync directory using browser's File System Access API data."""
     try:
         user_id = session.get('user_id')
         if not user_id:
-            logger.error("No user_id found in session")
             return jsonify({'status': 'error', 'message': 'Session expired'}), 401
             
         sync_tool = user_manager.get_sync_tool(user_id)
         if not sync_tool:
-            logger.error("No sync tool found for user")
             return jsonify({'status': 'error', 'message': 'Please upload credentials first'}), 400
             
-        directory = request.form.get('directory')
-        logger.debug(f"Received directory path: {directory}")
-        
-        if not directory:
-            logger.error("No directory provided in request")
-            return jsonify({'status': 'error', 'message': 'No directory provided'}), 400
+        # Get directory info from request
+        dir_info = request.json.get('directory')
+        if not dir_info:
+            return jsonify({'status': 'error', 'message': 'No directory information provided'}), 400
             
-        if directory.startswith('~'):
-            directory = os.path.expanduser(directory)
-            logger.debug(f"Expanded directory path: {directory}")
+        # Validate directory info
+        if not isinstance(dir_info, dict) or 'files' not in dir_info:
+            return jsonify({'status': 'error', 'message': 'Invalid directory information'}), 400
             
-        if not os.path.exists(directory):
-            logger.error(f"Directory does not exist: {directory}")
-            return jsonify({'status': 'error', 'message': 'Directory does not exist'}), 400
-            
-        if not os.path.isdir(directory):
-            logger.error(f"Path is not a directory: {directory}")
-            return jsonify({'status': 'error', 'message': 'Path is not a directory'}), 400
-            
-        if not os.access(directory, os.R_OK):
-            logger.error(f"Directory is not readable: {directory}")
-            return jsonify({'status': 'error', 'message': 'Directory is not readable'}), 400
-            
-        logger.debug(f"Directory validation passed for: {directory}")
-        sync_tool.sync_status['sync_directory'] = directory
+        # Store directory info in sync tool
+        sync_tool.sync_status['browser_dir_handle'] = dir_info
+        sync_tool.sync_status['sync_directory'] = dir_info['name']
         user_manager.store_user_session(user_id, sync_tool)
-        logger.debug(f"Set sync directory for user {user_id}: {directory}")
+        
+        logger.debug(f"Set browser directory handle for user {user_id}: {dir_info['name']}")
         return jsonify({'status': 'success', 'message': 'Sync directory updated'})
         
     except Exception as e:

@@ -161,6 +161,8 @@
             await setDirectory(dirPath);
         });
 
+
+
         async function selectDirectory() {
             try {
                 // Check if the File System Access API is supported
@@ -173,14 +175,66 @@
                     mode: 'read'
                 });
                 
-                directoryHandle = dirHandle;
-                const dirPath = dirHandle.name;
-                document.getElementById('selectedDirPath').textContent = `Selected directory: ${dirPath}`;
-                
-                // Send directory handle to backend
-                await setDirectory(dirHandle);
-                
-                showNotification('Directory selected successfully!', 'success');
+                // Verify this is the correct directory by checking for some WhatsApp media files
+                try {
+                    let isWhatsAppDir = false;
+                    for await (const entry of dirHandle.values()) {
+                        if (entry.kind === 'file' && 
+                            (entry.name.startsWith('WhatsApp') || 
+                            entry.name.endsWith('.jpg') || 
+                            entry.name.endsWith('.mp4'))) {
+                            isWhatsAppDir = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!isWhatsAppDir) {
+                        showNotification('Selected directory does not appear to be a WhatsApp Media folder. Please select the correct directory.', 'warning');
+                        return;
+                    }
+                } catch (error) {
+                    console.error('Error verifying directory:', error);
+                }
+
+                // Create a FileSystemDirectoryHandle object to send to the server
+                const dirInfo = {
+                    name: dirHandle.name,
+                    kind: 'directory',
+                    files: []
+                };
+
+                // List all files in the directory
+                for await (const entry of dirHandle.values()) {
+                    if (entry.kind === 'file') {
+                        const file = await entry.getFile();
+                        dirInfo.files.push({
+                            name: entry.name,
+                            size: file.size,
+                            type: file.type,
+                            lastModified: file.lastModified
+                        });
+                    }
+                }
+
+                // Send directory info to server
+                const response = await fetch('/set_sync_directory', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ directory: dirInfo })
+                });
+
+                const data = await response.json();
+                if (data.status === 'success') {
+                    showNotification('Directory set successfully!', 'success');
+                    document.getElementById('selectedDirPath').textContent = `Selected directory: ${dirHandle.name}`;
+                    // Store the directory handle for future use
+                    window.directoryHandle = dirHandle;
+                    updateStatus();
+                } else {
+                    showNotification(data.message || 'Error setting directory', 'error');
+                }
             } catch (error) {
                 if (error.name === 'AbortError') {
                     // User cancelled the selection
